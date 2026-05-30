@@ -471,3 +471,9 @@ SLURM_SSH_USER=<your-user> \
 - `docs/IMPLEMENTATION.md` — control loop design, tuner backends, issues found and fixed
 - `docs/RESEARCH_NOTES.md` — SelfTune-style rationale, RL design, scope decisions
 - `docs/E2E_RESULTS.md` — live E2E run results against the Docker sandbox, all bugs fixed
+
+---
+
+## License
+
+This project is open source under the MIT License. See [LICENSE](LICENSE).

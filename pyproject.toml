@@ -2,6 +2,8 @@
 name = "adaptive-wlm-controller"
 version = "0.1.0"
 description = "Adaptive quota-aware workload manager controller for Slurm"
+license = { text = "MIT" }
+authors = [{ name = "vjranagit" }]
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.116.0",
