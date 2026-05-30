@@ -66,6 +66,27 @@ tabular method — no neural nets / external RL dependencies.
 3. **`ControllerConfig` reads env at import time** (dataclass field defaults) — documented; env
    overrides must be set before first import. Config tests use a subprocess to validate overrides.
 
+## Issues found and fixed during the pre-release hardening pass
+
+These were surfaced by an independent audit before the public v1 release and fixed with regression
+tests (suite grew to 182):
+
+4. **Actuator advanced internal state even when the live Slurm command failed** — in live mode
+   `SlurmActuator.apply()` updated `state.max_jobs` / `state.priority_weight_fs` (and `last_apply`)
+   regardless of command success, so a failed `sacctmgr`/`scontrol` call left the controller's
+   state diverging from the real cluster. Fixed so state and the cooldown clock only advance when
+   the command succeeded (`ok=True`) or in dry-run (which still simulates the new state); a failed
+   live command now logs a warning and returns `changed=False`. Tests in `test_actuator.py`.
+5. **Initial `max_jobs` could exceed the ceiling when `max_jobs_ceil < 8`** — the actuator seeded
+   `max_jobs = max(floor, 8)`, which violated the upper bound for small ceilings on the first
+   iteration. Fixed by clamping the initial value to `[floor, ceil]`. Tests in `test_actuator.py`.
+6. **AIMD "hold" path returned `current` unclamped** — an out-of-bounds `current` could propagate
+   through the hold branch. Fixed by clamping the hold return to `[floor, ceil]` like the other
+   branches. Tests in `test_aimd.py`.
+7. **`SlurmCommandRunner.run(check=False)` reported false success** — with `check=False` a non-zero
+   exit skipped the exception path and returned `(True, stdout)`. Fixed so `ok` reflects the real
+   `returncode == 0`. Tests in `test_slurm_exec.py`.
+
 See `docs/E2E_RESULTS.md` for the full live run against the Docker Slurm sandbox.
 
 ## Next step for stronger production fidelity
