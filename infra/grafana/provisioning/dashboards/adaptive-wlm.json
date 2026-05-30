@@ -1,0 +1,33 @@
+{
+  "id": null,
+  "uid": "adaptive-wlm",
+  "title": "Adaptive WLM Controller",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Saturation",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [{"expr": "adaptive_saturation_score", "refId": "A"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Queue Depth",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {"expr": "adaptive_pending_jobs", "refId": "A"},
+        {"expr": "adaptive_running_jobs", "refId": "B"}
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Target MaxJobs",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+      "targets": [{"expr": "adaptive_target_max_jobs", "refId": "A"}]
+    }
+  ],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "refresh": "10s"
+}

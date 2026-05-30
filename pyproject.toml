@@ -1,0 +1,31 @@
+[project]
+name = "adaptive-wlm-controller"
+version = "0.1.0"
+description = "Adaptive quota-aware workload manager controller for Slurm"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.116.0",
+  "uvicorn>=0.35.0",
+  "prometheus-client>=0.22.0",
+  "pydantic>=2.11.0",
+  "python-dateutil>=2.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "ruff>=0.9.0",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["controller*", "apps*"]
