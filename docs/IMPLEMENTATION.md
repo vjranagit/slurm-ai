@@ -7,9 +7,13 @@ The controller runs a bounded loop:
 1. Collect snapshot from Slurm (`sinfo`, `squeue`, optional `sacct`)
 2. Build saturation score from queue pressure
 3. Compute policy outputs (fairshare proxy weight + target max jobs)
-4. Apply AIMD update to target max jobs
+4. Apply the configured tuner (AIMD or RL — see "Tuner backends") to the target max jobs
 5. Actuate changes with cooldown and bounds
 6. Emit metrics + structured logs
+
+The tuner is pluggable via `controller.tuner.build_tuner(cfg)`, selected by `TUNER_KIND`
+(`aimd` default, `rl`). Both tuners share the same `next_max_jobs(current, saturation) -> int`
+contract and the same decrease/hold/increase primitives, so they are bounded by construction.
 
 ## Why AIMD first
 

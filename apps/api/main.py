@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.responses import Response
 
+from controller import metrics as _metrics  # noqa: F401  # registers adaptive_* gauges
 from controller.collectors.slurm import SlurmCollector
 from controller.config import ControllerConfig
 

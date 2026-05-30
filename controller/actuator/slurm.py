@@ -57,7 +57,6 @@ class SlurmActuator:
                 "else scontrol update PartitionName=debug MaxCPUsPerNode="
                 f"{new_max}; fi"
             ),
-            "scontrol reconfigure",
         ]
 
         command_log: list[str] = []

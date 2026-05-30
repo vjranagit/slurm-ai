@@ -13,7 +13,7 @@ from controller.collectors.slurm import SlurmCollector
 from controller.config import ControllerConfig
 from controller.metrics import ACTIONS, MAX_JOBS, PENDING, PRIORITY, RUNNING, SATURATION
 from controller.policy.engine import PolicyEngine
-from controller.tuner.aimd import AimdTuner
+from controller.tuner import build_tuner
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,7 +33,7 @@ def run(cfg: ControllerConfig) -> None:
         ssh_key_file=cfg.slurm_ssh_key_file,
     )
     policy = PolicyEngine(cfg)
-    tuner = AimdTuner(cfg)
+    tuner = build_tuner(cfg)
     actuator = SlurmActuator(cfg)
 
     LOG.info("controller started dry_run=%s interval=%s", cfg.dry_run, cfg.interval_sec)

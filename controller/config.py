@@ -17,3 +17,10 @@ class ControllerConfig:
     slurm_ssh_host: str = os.getenv("SLURM_SSH_HOST", "")
     slurm_ssh_user: str = os.getenv("SLURM_SSH_USER", "")
     slurm_ssh_key_file: str = os.getenv("SLURM_SSH_KEY_FILE", "")
+    # RL tuner settings
+    tuner_kind: str = os.getenv("TUNER_KIND", "aimd")
+    rl_qtable_path: str = os.getenv("RL_QTABLE_PATH", "models/qtable.json")
+    rl_alpha: float = float(os.getenv("RL_ALPHA", "0.1"))
+    rl_gamma: float = float(os.getenv("RL_GAMMA", "0.9"))
+    rl_epsilon: float = float(os.getenv("RL_EPSILON", "0.1"))
+    rl_train_episodes: int = int(os.getenv("RL_TRAIN_EPISODES", "300"))

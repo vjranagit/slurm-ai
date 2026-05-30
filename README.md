@@ -5,7 +5,7 @@ It implements a quota-aware control loop inspired by SelfTune-style iterative tu
 
 - collects scheduler + system pressure signals
 - computes policy decisions from queue pressure and saturation
-- applies safe Slurm tuning actions (AIMD-based, bounded)
+- applies safe Slurm tuning actions via a pluggable tuner (AIMD default, optional RL), bounded
 - emits Prometheus metrics and structured logs
 - provides a control-plane API and a lightweight dashboard
 - includes a Slurm sandbox and workload replay tools
@@ -18,7 +18,8 @@ This repository focuses on Slurm first. IBM LSF support is a planned follow-on b
 
 - `controller/collectors`: gather pressure and utilization (`sinfo`, `squeue`, `sacct` optional)
 - `controller/policy`: policy engine for quotas, fairshare, saturation rules
-- `controller/tuner`: AIMD controller over actionable scheduler limits
+- `controller/tuner`: pluggable tuner over actionable scheduler limits — AIMD (default) or
+  tabular-Q-learning RL (`TUNER_KIND=rl`), selected by `build_tuner(cfg)`
 - `controller/actuator`: safe application of updates (dry-run + bounded apply)
 - `controller/simulator`: trace replay and policy evaluation utilities
 - `controller/workload`: synthetic job submission and replay scripts
@@ -73,7 +74,36 @@ python -m controller.main --interval 15 --dry-run false
 - API docs: http://localhost:8080/docs
 - Prometheus: http://localhost:9090
 - Grafana: http://localhost:3000 (admin/admin)
-- Dashboard: `apps/dashboard/index.html` (served via API static endpoint)
+- Dashboard: http://localhost:8080/ui (static UI mounted by the API)
+
+## Tuner selection (AIMD / RL)
+
+The control loop uses a pluggable tuner with the same `next_max_jobs(current, saturation)` contract.
+
+```bash
+# default: AIMD
+python -m controller.main --interval 15 --dry-run true
+
+# train and use the RL (tabular Q-learning) tuner
+python -m controller.tuner.train --episodes 300 --seed 42   # -> models/qtable.json
+TUNER_KIND=rl python -m controller.main --interval 15 --dry-run true
+```
+
+The RL tuner is bounded by construction (same decrease/hold/increase primitives as AIMD) and falls
+back to AIMD for untrained states. See `docs/IMPLEMENTATION.md` for design and `docs/RESEARCH_NOTES.md`
+for rationale.
+
+## Testing
+
+```bash
+pip install -e ".[dev]"
+ruff check .
+pytest -q          # 170 tests: unit + stress + RL + API + regression
+```
+
+Coverage spans config, exec wrapper (docker/local/ssh), collector parsing, policy, AIMD + RL
+tuners, actuator (dry-run/live/cooldown/bounds), simulator, API, and 2000-iteration stress
+invariants. End-to-end runs against the Docker Slurm sandbox are recorded in `docs/E2E_RESULTS.md`.
 
 ## Safety model
 
