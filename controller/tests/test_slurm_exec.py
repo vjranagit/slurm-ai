@@ -183,3 +183,30 @@ def test_run_local_captures_multiline_output() -> None:
     assert ok is True
     assert "line1" in out
     assert "line3" in out
+
+
+# ---------------------------------------------------------------------------
+# Fix 4 regression: check=False must still return ok=False on non-zero exit
+# ---------------------------------------------------------------------------
+
+
+def test_run_check_false_nonzero_exit_returns_false() -> None:
+    """run(check=False) on a command that exits non-zero must return ok=False, not True."""
+    runner = make_runner("local")
+    ok, _out = runner.run("false", check=False)
+    assert ok is False
+
+
+def test_run_check_false_zero_exit_returns_true() -> None:
+    """run(check=False) on a successful command still returns ok=True."""
+    runner = make_runner("local")
+    ok, out = runner.run("echo check-false-ok", check=False)
+    assert ok is True
+    assert "check-false-ok" in out
+
+
+def test_run_check_true_nonzero_exit_returns_false() -> None:
+    """Existing behaviour: run(check=True) on failure returns ok=False via CalledProcessError."""
+    runner = make_runner("local")
+    ok, _out = runner.run("false", check=True)
+    assert ok is False

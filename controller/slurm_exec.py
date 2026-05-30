@@ -50,7 +50,7 @@ class SlurmCommandRunner:
         wrapped = self._build(command)
         try:
             proc = subprocess.run(wrapped, shell=True, check=check, capture_output=True, text=True)
-            return True, proc.stdout.strip()
+            return proc.returncode == 0, proc.stdout.strip()
         except subprocess.CalledProcessError as exc:
             msg = (exc.stderr or exc.stdout or str(exc)).strip()
             return False, msg

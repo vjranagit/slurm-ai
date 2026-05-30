@@ -20,7 +20,8 @@ class ControllerState:
 class SlurmActuator:
     def __init__(self, cfg: ControllerConfig) -> None:
         self.cfg = cfg
-        self.state = ControllerState(max_jobs=max(cfg.max_jobs_floor, 8), priority_weight_fs=1000)
+        init_max = max(cfg.max_jobs_floor, min(cfg.max_jobs_ceil, 8))
+        self.state = ControllerState(max_jobs=init_max, priority_weight_fs=1000)
         self.last_apply = datetime.min.replace(tzinfo=timezone.utc)
         self.runner = SlurmCommandRunner(
             SlurmExecConfig(
@@ -60,24 +61,36 @@ class SlurmActuator:
         ]
 
         command_log: list[str] = []
+        all_ok = True
         if not self.cfg.dry_run:
             for cmd in commands:
                 ok, out = self.runner.run(cmd, check=True)
                 command_log.append(f"{'OK' if ok else 'ERR'} {cmd} :: {out}")
                 if not ok:
                     LOG.warning("actuator command failed cmd=%s err=%s", cmd, out)
+                    all_ok = False
         else:
             command_log = [f"DRY_RUN {c}" for c in commands]
 
-        self.state.max_jobs = new_max
-        self.state.priority_weight_fs = new_weight
-        self.last_apply = now
+        if all_ok:
+            self.state.max_jobs = new_max
+            self.state.priority_weight_fs = new_weight
+            self.last_apply = now
+            return AppliedAction(
+                changed=(old_max != new_max) or (old_weight != new_weight),
+                old_max_jobs=old_max,
+                new_max_jobs=new_max,
+                old_priority_weight_fs=old_weight,
+                new_priority_weight_fs=new_weight,
+                command_log=command_log,
+            )
 
+        # Live command failed — do not advance state, do not update last_apply
         return AppliedAction(
-            changed=(old_max != new_max) or (old_weight != new_weight),
+            changed=False,
             old_max_jobs=old_max,
-            new_max_jobs=new_max,
+            new_max_jobs=old_max,
             old_priority_weight_fs=old_weight,
-            new_priority_weight_fs=new_weight,
+            new_priority_weight_fs=old_weight,
             command_log=command_log,
         )

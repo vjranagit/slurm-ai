@@ -11,22 +11,14 @@ from controller.simulator.replay import ReplayResult, replay_csv
 
 def write_csv(content: str) -> str:
     """Write CSV content to a temp file, return path. Caller must delete."""
-    fd, path = tempfile.mkstemp(suffix=".csv", dir="/tmp")
-    # rule says no /tmp — use project tmp
-    os.close(fd)
-    os.unlink(path)
-    project_tmp = "/home/user/work/projects/slurm-ai/tmp"
-    os.makedirs(project_tmp, exist_ok=True)
-    fd, path = tempfile.mkstemp(suffix=".csv", dir=project_tmp)
+    fd, path = tempfile.mkstemp(suffix=".csv")
     with os.fdopen(fd, "w") as f:
         f.write(content)
     return path
 
 
 @pytest.fixture
-def csv_path(request: pytest.FixtureRequest, tmp_path: pytest.TempPathFactory) -> str:  # type: ignore[type-arg]
-    project_tmp = "/home/user/work/projects/slurm-ai/tmp"
-    os.makedirs(project_tmp, exist_ok=True)
+def csv_path(tmp_path: pytest.TempPathFactory) -> str:  # type: ignore[type-arg]
     p = str(tmp_path / "trace.csv")
     return p
 

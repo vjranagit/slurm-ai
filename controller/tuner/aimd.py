@@ -11,5 +11,5 @@ class AimdTuner:
         elif saturation <= self.cfg.pressure_low:
             next_value = min(self.cfg.max_jobs_ceil, current + 1)
         else:
-            next_value = current
+            next_value = max(self.cfg.max_jobs_floor, min(self.cfg.max_jobs_ceil, current))
         return next_value

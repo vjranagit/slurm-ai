@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 
 import pytest
 
-PYTHON = "/home/user/work/projects/slurm-ai/.venv/bin/python"
+PYTHON = sys.executable
 
 
 def run_cfg_expr(expr: str, env: dict[str, str] | None = None) -> str:

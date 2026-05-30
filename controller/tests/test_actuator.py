@@ -256,3 +256,82 @@ def test_apply_returns_correct_old_and_new_max_jobs(monkeypatch: pytest.MonkeyPa
     action = actuator.apply(initial + 5, 2500)
     assert action.old_max_jobs == initial
     assert action.new_max_jobs == initial + 5
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 regression: state must NOT advance when live command fails
+# ---------------------------------------------------------------------------
+
+
+def test_live_command_failure_does_not_advance_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """State stays at old values when SlurmCommandRunner.run returns (False, 'err')."""
+    cfg = make_cfg(dry_run=False, max_jobs_floor=2, max_jobs_ceil=128)
+    actuator = SlurmActuator(cfg)
+    initial_max = actuator.state.max_jobs
+    initial_weight = actuator.state.priority_weight_fs
+
+    def failing_run(command: str, check: bool = True) -> tuple[bool, str]:
+        return False, "err: sacctmgr permission denied"
+
+    monkeypatch.setattr(actuator.runner, "run", failing_run)
+    action = actuator.apply(64, 5000)
+
+    # State must be frozen at pre-apply values
+    assert actuator.state.max_jobs == initial_max
+    assert actuator.state.priority_weight_fs == initial_weight
+    # Returned action reflects no change
+    assert action.changed is False
+    assert action.new_max_jobs == initial_max
+    assert action.new_priority_weight_fs == initial_weight
+
+
+def test_live_command_failure_does_not_update_last_apply(monkeypatch: pytest.MonkeyPatch) -> None:
+    """last_apply timestamp must not advance when the command fails (cooldown stays reset-able)."""
+    cfg = make_cfg(dry_run=False, cooldown_sec=3600)
+    actuator = SlurmActuator(cfg)
+    original_last = actuator.last_apply
+
+    def failing_run(command: str, check: bool = True) -> tuple[bool, str]:
+        return False, "err"
+
+    monkeypatch.setattr(actuator.runner, "run", failing_run)
+    actuator.apply(10, 2500)
+
+    assert actuator.last_apply == original_last
+
+
+def test_dry_run_still_simulates_state_advance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """dry_run must simulate new state (unchanged behavior)."""
+    cfg = make_cfg(dry_run=True, max_jobs_floor=2, max_jobs_ceil=128)
+    actuator = SlurmActuator(cfg)
+    action = actuator.apply(50, 5000)
+    assert actuator.state.max_jobs == 50
+    assert actuator.state.priority_weight_fs == 5000
+    assert action.changed is True
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 regression: initial max_jobs must not exceed max_jobs_ceil
+# ---------------------------------------------------------------------------
+
+
+def test_init_clamps_max_jobs_when_ceil_below_8() -> None:
+    """When max_jobs_ceil < 8, initial max_jobs must be clamped to ceil."""
+    cfg = make_cfg(dry_run=True, max_jobs_floor=1, max_jobs_ceil=4)
+    actuator = SlurmActuator(cfg)
+    assert actuator.state.max_jobs <= cfg.max_jobs_ceil
+    assert actuator.state.max_jobs == 4
+
+
+def test_init_max_jobs_equals_8_when_ceil_above_8() -> None:
+    """Normal case: ceil >= 8 means initial max_jobs = 8."""
+    cfg = make_cfg(dry_run=True, max_jobs_floor=2, max_jobs_ceil=128)
+    actuator = SlurmActuator(cfg)
+    assert actuator.state.max_jobs == 8
+
+
+def test_init_max_jobs_equals_floor_when_floor_above_8() -> None:
+    """When floor > 8, initial max_jobs = floor (clamped up)."""
+    cfg = make_cfg(dry_run=True, max_jobs_floor=20, max_jobs_ceil=128)
+    actuator = SlurmActuator(cfg)
+    assert actuator.state.max_jobs == 20
