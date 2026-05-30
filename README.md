@@ -48,6 +48,13 @@ Key decisions from `docs/RESEARCH_NOTES.md` and `docs/IMPLEMENTATION.md`:
 See `docs/RESEARCH_NOTES.md` for RL design rationale and `docs/IMPLEMENTATION.md` for
 implementation decisions and known-issue history.
 
+> **Attribution & scope.** This is an independent, open-source reference implementation inspired by
+> the publicly available paper *"SelfTune: Tuning Cluster Managers"* (USENIX NSDI 2023,
+> <https://www.usenix.org/conference/nsdi23/presentation/karthikeyan>). All code here was written
+> from scratch from the public paper as an educational/portfolio project. It is **not** affiliated
+> with, derived from, or representative of any proprietary or internal system, and uses no
+> non-public information.
+
 ---
 
 ## Architecture
