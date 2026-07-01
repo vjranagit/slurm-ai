@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import tempfile
 
 from controller.slurm_exec import SlurmCommandRunner, SlurmExecConfig
 
@@ -26,7 +28,8 @@ def submit_jobs(
         )
     )
     for i in range(count):
-        script = f"/tmp/adaptive-job-{i}.sh"
+        fd, script = tempfile.mkstemp(prefix="adaptive-job-", suffix=".sh", dir="/tmp")
+        os.close(fd)
         create_script = (
             "cat > {path} <<'EOS'\n"
             "#!/bin/bash\n"
@@ -36,14 +39,24 @@ def submit_jobs(
             "EOS\n"
             "chmod +x {path}"
         ).format(path=script, seconds=seconds, i=i)
-        ok_create, out_create = runner.run(create_script, check=True)
-        if not ok_create:
-            raise RuntimeError(out_create)
+        try:
+            ok_create, out_create = runner.run(create_script, check=True)
+            if not ok_create:
+                raise RuntimeError(out_create)
 
-        ok_submit, out_submit = runner.run(f"sbatch {script}", check=True)
-        if not ok_submit:
-            raise RuntimeError(out_submit)
-        print(out_submit.strip())
+            ok_submit, out_submit = runner.run(f"sbatch {script}", check=True)
+            if not ok_submit:
+                raise RuntimeError(out_submit)
+            print(out_submit.strip())
+        finally:
+            # `script` is a local placeholder created only to get an unpredictable
+            # name (the real script is written remotely via the heredoc above).
+            # Remove it so we don't leak a 0-byte file per submitted job; in local
+            # mode the heredoc/sbatch may already have consumed or replaced it.
+            try:
+                os.unlink(script)
+            except FileNotFoundError:
+                pass
 
 
 if __name__ == "__main__":

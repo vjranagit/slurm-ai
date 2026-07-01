@@ -31,6 +31,8 @@ class SlurmActuator:
                 ssh_host=cfg.slurm_ssh_host,
                 ssh_user=cfg.slurm_ssh_user,
                 ssh_key_file=cfg.slurm_ssh_key_file,
+                exec_timeout_sec=cfg.exec_timeout_sec,
+                ssh_strict_host_key=cfg.ssh_strict_host_key,
             )
         )
 

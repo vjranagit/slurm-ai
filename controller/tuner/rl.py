@@ -9,6 +9,7 @@ Persistence  : Q-table stored as JSON at cfg.rl_qtable_path; missing file → em
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,8 @@ from controller.tuner.aimd import AimdTuner
 
 if TYPE_CHECKING:
     from controller.config import ControllerConfig
+
+LOG = logging.getLogger("adaptive-controller.tuner.rl")
 
 # ---------------------------------------------------------------------------
 # Discretisation helpers
@@ -76,11 +79,59 @@ def _qtable_to_json(qtable: QTable) -> dict[str, dict[str, list[float]]]:
     return out
 
 
-def _json_to_qtable(data: dict[str, dict[str, list[float]]]) -> QTable:
+def _json_to_qtable(data: object) -> QTable:
+    """Convert raw JSON data to a Q-table, dropping any malformed entries.
+
+    Defensive against any JSON shape (not just the expected
+    ``{pb: {mb: [q0, q1, q2]}}``): a non-dict root, non-dict inner values,
+    non-int-parseable keys, or action lists of the wrong length/type are all
+    skipped with a warning rather than raising. Never raises.
+    """
     qtable: QTable = {}
+    if not isinstance(data, dict):
+        LOG.warning(
+            "qtable JSON root is not an object (got %s); ignoring", type(data).__name__
+        )
+        return qtable
+
     for pb_str, inner in data.items():
+        try:
+            pb = int(pb_str)
+        except (TypeError, ValueError):
+            LOG.warning("skipping malformed qtable entry: bad pressure-bucket key %r", pb_str)
+            continue
+
+        if not isinstance(inner, dict):
+            LOG.warning(
+                "skipping malformed qtable entry (%s): expected object of "
+                "maxjobs-buckets, got %s",
+                pb_str, type(inner).__name__,
+            )
+            continue
+
         for mb_str, vals in inner.items():
-            qtable[(int(pb_str), int(mb_str))] = list(vals)
+            try:
+                mb = int(mb_str)
+            except (TypeError, ValueError):
+                LOG.warning(
+                    "skipping malformed qtable entry (%s,%s): bad maxjobs-bucket key",
+                    pb_str, mb_str,
+                )
+                continue
+
+            if (
+                not isinstance(vals, (list, tuple))
+                or len(vals) != _N_ACTIONS
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals)
+            ):
+                LOG.warning(
+                    "skipping malformed qtable entry (%s,%s): expected list of %d "
+                    "numeric Q-values, got %r",
+                    pb_str, mb_str, _N_ACTIONS, vals,
+                )
+                continue
+
+            qtable[(pb, mb)] = list(vals)
     return qtable
 
 
@@ -92,11 +143,25 @@ def save_qtable(qtable: QTable, path: str) -> None:
 
 
 def load_qtable(path: str) -> QTable:
-    """Load Q-table from *path*; return empty dict if file is missing."""
+    """Load Q-table from *path*; return empty dict if file is missing or corrupt.
+
+    Robust to syntactically-valid JSON of the wrong shape (e.g. ``{"0": 5}`` or
+    ``{"0": {"0": 5}}``) as well as truncated/non-JSON content and I/O errors —
+    any of these fall back to an empty table (and thus AIMD), never raise.
+    """
     try:
         with open(path) as fh:
-            return _json_to_qtable(json.load(fh))
+            data = json.load(fh)
     except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, ValueError, OSError) as exc:
+        LOG.warning("failed to load qtable from %s: %s; falling back to AIMD", path, exc)
+        return {}
+
+    try:
+        return _json_to_qtable(data)
+    except (ValueError, TypeError, AttributeError) as exc:
+        LOG.warning("failed to parse qtable from %s: %s; falling back to AIMD", path, exc)
         return {}
 
 
