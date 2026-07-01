@@ -294,6 +294,72 @@ def test_json_to_qtable_skips_wrong_length_action_list() -> None:
     assert len(qtable) == 1
 
 
+def test_json_to_qtable_skips_nan_inf_action_values(
+    tmp_path: pytest.TempPathFactory,
+) -> None:
+    """NaN/inf/-inf Q-values must be dropped, not accepted as valid floats.
+
+    Python's json module parses the bare literals NaN/Infinity/-Infinity by
+    default, so a Q-value of NaN would previously pass the
+    isinstance(v, (int, float)) check and silently corrupt the greedy argmax
+    in next_max_jobs (NaN comparisons are always False, biasing selection
+    toward the first/DECREASE action). Such entries must now be skipped,
+    exactly like a wrong-length entry, falling back to AIMD for that state.
+    """
+    from controller.tuner.rl import _json_to_qtable
+
+    # Raw JSON string with a bare NaN literal (valid per Python's json parser).
+    path = str(tmp_path / "nan_qtable.json")  # type: ignore[operator]
+    with open(path, "w") as fh:
+        fh.write('{"0": {"0": [NaN, 1.0, 2.0]}}')
+
+    result = load_qtable(path)
+    assert result == {}, "entry with NaN Q-value must be dropped"
+
+    # Also exercise inf / -inf directly via _json_to_qtable with float().
+    data = {
+        "0": {"0": [float("nan"), 1.0, 2.0]},
+        "1": {"1": [float("inf"), 0.5, 0.2]},
+        "2": {"2": [float("-inf"), 0.5, 0.2]},
+        "3": {"3": [0.1, 0.5, 0.9]},  # valid finite entry, must be kept
+    }
+    qtable = _json_to_qtable(data)  # type: ignore[arg-type]
+    assert (0, 0) not in qtable
+    assert (1, 1) not in qtable
+    assert (2, 2) not in qtable
+    assert (3, 3) in qtable
+    assert qtable[(3, 3)] == [0.1, 0.5, 0.9]
+    assert len(qtable) == 1
+
+    # RLTuner must still construct and stay in bounds when a NaN entry is
+    # present alongside otherwise-valid data.
+    cfg = _make_cfg(rl_qtable_path=path)
+    tuner = RLTuner(cfg)
+    rng = random.Random(17)
+    for _ in range(200):
+        current = rng.randint(cfg.max_jobs_floor, cfg.max_jobs_ceil)
+        sat = rng.random()
+        out = tuner.next_max_jobs(current, sat)
+        assert cfg.max_jobs_floor <= out <= cfg.max_jobs_ceil
+
+
+def test_json_to_qtable_normal_finite_table_loads_fully_no_regression() -> None:
+    """A normal Q-table with only finite values must load every entry unchanged."""
+    from controller.tuner.rl import _json_to_qtable
+
+    data = {
+        "0": {"0": [0.1, 0.5, 0.9], "1": [1.0, -1.0, 0.0]},
+        "1": {"2": [3.5, 2.5, -2.5]},
+        "4": {"5": [0.0, 0.0, 0.0]},
+    }
+    qtable = _json_to_qtable(data)  # type: ignore[arg-type]
+    assert len(qtable) == 4
+    assert qtable[(0, 0)] == [0.1, 0.5, 0.9]
+    assert qtable[(0, 1)] == [1.0, -1.0, 0.0]
+    assert qtable[(1, 2)] == [3.5, 2.5, -2.5]
+    assert qtable[(4, 5)] == [0.0, 0.0, 0.0]
+
+
 def test_malformed_qtable_entry_does_not_crash_next_max_jobs(
     tmp_path: pytest.TempPathFactory,
 ) -> None:

@@ -270,7 +270,7 @@ python -m controller.simulator.replay <trace.csv>
 | API docs | http://localhost:8080/docs | — |
 | Loop metrics | http://localhost:9108/metrics | — |
 | Prometheus | http://localhost:9090 | — |
-| Grafana | http://localhost:3000 | admin / admin |
+| Grafana | http://127.0.0.1:3000 | Set via `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` in `.env` (no default password; bound to `127.0.0.1` only) |
 
 ---
 

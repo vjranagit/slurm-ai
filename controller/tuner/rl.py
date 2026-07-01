@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from typing import TYPE_CHECKING
 
@@ -122,7 +123,10 @@ def _json_to_qtable(data: object) -> QTable:
             if (
                 not isinstance(vals, (list, tuple))
                 or len(vals) != _N_ACTIONS
-                or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals)
+                or not all(
+                    isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                    for v in vals
+                )
             ):
                 LOG.warning(
                     "skipping malformed qtable entry (%s,%s): expected list of %d "
