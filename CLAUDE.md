@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 pip install -e ".[dev]"      # editable install with dev tools
 
 ruff check .                 # lint (line-length 100)
-pytest -q                    # 170 tests (CI runs exactly: ruff check . && pytest -q)
+pytest -q                    # 182 tests (CI runs exactly: ruff check . && pytest -q)
 pytest controller/tests/test_actuator.py -q          # single file
 pytest controller/tests/test_rl.py::test_bounds -q   # single test (example)
 
@@ -62,6 +62,7 @@ Shared infrastructure:
 - **`controller/config.py`** — `ControllerConfig` dataclass holds all tunables (thresholds, AIMD bounds, cooldown, exec mode, plus RL settings: `tuner_kind`, `rl_qtable_path`, `rl_alpha`, `rl_gamma`, `rl_epsilon`, `rl_train_episodes`). Field defaults call `os.getenv(...)` at **import time** (see `.env.example`); there is no `load_config()`, so env vars must be set before the package is first imported. `controller/main.py` additionally lets `--interval` / `--dry-run` override the constructed config.
 - **`controller/types.py`** — data contracts: `ClusterSnapshot`, `PolicyDecision` (declared but the loop currently passes raw ints, not this type), `AppliedAction`.
 - **`controller/metrics.py`** — module-level `prometheus_client` `Gauge` singletons on the default registry: `adaptive_saturation_score`, `adaptive_pending_jobs`, `adaptive_running_jobs`, `adaptive_target_max_jobs`, `adaptive_priority_weight_fs`, `adaptive_action_changed`. The loop process exposes them via `start_http_server(9108)`.
+- **`controller/workload/submitter.py`** — synthetic job-submission helper backing `scripts/submit-test-jobs.sh` (`python -m controller.workload.submitter`); builds N sleep-job scripts and `sbatch`s them through `SlurmCommandRunner`, using the same `docker`/`local`/`ssh` exec plumbing as the collector and actuator.
 
 Entry points:
 
@@ -71,7 +72,7 @@ Entry points:
 
 ## Testing
 
-`pytest -q` runs 170 tests covering config (env override via subprocess), `slurm_exec` (docker/local/ssh command build + real local run), collector parsing + pressure math + edge cases, policy, AIMD + RL tuners, actuator (dry-run/live/cooldown/bounds/changed-flag), simulator replay, the API (TestClient), 2000-iteration stress invariants, and regression tests for the two bugs below. The Slurm boundary (`SlurmCommandRunner.run`) is monkeypatched — no test touches a real cluster. End-to-end runs against the Docker sandbox are recorded in `docs/E2E_RESULTS.md`.
+`pytest -q` runs 182 tests covering config (env override via subprocess), `slurm_exec` (docker/local/ssh command build + real local run), collector parsing + pressure math + edge cases, policy, AIMD + RL tuners, actuator (dry-run/live/cooldown/bounds/changed-flag), simulator replay, the API (TestClient), 2000-iteration stress invariants, and regression tests for the two bugs below. The Slurm boundary (`SlurmCommandRunner.run`) is monkeypatched — no test touches a real cluster. End-to-end runs against the Docker sandbox are recorded in `docs/E2E_RESULTS.md`.
 
 ## Safety invariants (don't weaken without intent)
 
