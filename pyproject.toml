@@ -17,6 +17,10 @@ dependencies = [
 dev = [
   "pytest>=8.3.0",
   "ruff>=0.9.0",
+  # Required by fastapi/starlette TestClient (controller/tests/test_api.py). Not pulled in
+  # transitively, so a fresh CI install lacks it and test collection hard-fails; pin it here.
+  # httpx (not httpx2) keeps test_bugfixes.py's importorskip("httpx") test active (full 182).
+  "httpx>=0.28,<1.0",
 ]
 
 [tool.ruff]
