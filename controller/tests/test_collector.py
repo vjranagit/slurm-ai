@@ -242,3 +242,32 @@ def test_snapshot_raises_runtime_error_when_runner_fails(
     monkeypatch.setattr(collector.runner, "run", fake_run)
     with pytest.raises(RuntimeError, match="permission denied"):
         collector.snapshot()
+
+
+def test_snapshot_raises_when_squeue_fails_not_bogus_idle_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine squeue failure must propagate as RuntimeError, not be masked into a
+    bogus 0-pending/0-running snapshot (regression: removed `|| true` from squeue)."""
+    collector = make_collector()
+
+    call_iter = iter([(True, SINFO_TYPICAL), (False, "squeue: error: slurmctld unreachable")])
+
+    def fake_run(command: str, check: bool = True) -> tuple[bool, str]:
+        return next(call_iter)
+
+    monkeypatch.setattr(collector.runner, "run", fake_run)
+    with pytest.raises(RuntimeError, match="slurmctld unreachable"):
+        collector.snapshot()
+
+
+def test_snapshot_raises_when_sinfo_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A genuine sinfo failure must propagate as RuntimeError (removed `|| true` from sinfo)."""
+    collector = make_collector()
+
+    def fake_run(command: str, check: bool = True) -> tuple[bool, str]:
+        return False, "sinfo: error: connection refused"
+
+    monkeypatch.setattr(collector.runner, "run", fake_run)
+    with pytest.raises(RuntimeError, match="connection refused"):
+        collector.snapshot()

@@ -17,6 +17,8 @@ class SlurmCollector:
         ssh_host: str = "",
         ssh_user: str = "",
         ssh_key_file: str = "",
+        exec_timeout_sec: int = 30,
+        ssh_strict_host_key: bool = True,
     ) -> None:
         self.runner = SlurmCommandRunner(
             SlurmExecConfig(
@@ -26,6 +28,8 @@ class SlurmCollector:
                 ssh_host=ssh_host,
                 ssh_user=ssh_user,
                 ssh_key_file=ssh_key_file,
+                exec_timeout_sec=exec_timeout_sec,
+                ssh_strict_host_key=ssh_strict_host_key,
             )
         )
 
@@ -41,8 +45,8 @@ class SlurmCollector:
         return pending / total
 
     def snapshot(self) -> ClusterSnapshot:
-        sinfo = self._exec("sinfo -h -o '%t' || true").splitlines()
-        squeue_rows = self._exec("squeue -h -o '%T|%r' || true").splitlines()
+        sinfo = self._exec("sinfo -h -o '%t'").splitlines()
+        squeue_rows = self._exec("squeue -h -o '%T|%r'").splitlines()
         sacct_rows = self._exec(
             "sacct -S now-5minutes -X -n -o State --parsable2 2>/dev/null || true"
         ).splitlines()

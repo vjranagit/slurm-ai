@@ -202,3 +202,86 @@ def test_metrics_body_contains_adaptive_saturation_score(client: TestClient) -> 
 def test_metrics_body_contains_adaptive_pending_jobs(client: TestClient) -> None:
     response = client.get("/metrics")
     assert "adaptive_pending_jobs" in response.text
+
+
+# ---------------------------------------------------------------------------
+# Optional bearer-token auth (CONTROLLER_API_TOKEN)
+# ---------------------------------------------------------------------------
+
+
+def test_no_token_set_snapshot_endpoint_stays_open(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Preserve existing behavior: unset CONTROLLER_API_TOKEN -> endpoints open."""
+    monkeypatch.delenv("CONTROLLER_API_TOKEN", raising=False)
+    response = client.get("/cluster/snapshot")
+    assert response.status_code == 200
+
+
+def test_no_token_set_metrics_endpoint_stays_open(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CONTROLLER_API_TOKEN", raising=False)
+    response = client.get("/metrics")
+    assert response.status_code == 200
+
+
+def test_token_set_snapshot_without_header_returns_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_TOKEN", "s3cret")
+    response = client.get("/cluster/snapshot")
+    assert response.status_code == 401
+
+
+def test_token_set_snapshot_with_wrong_header_returns_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_TOKEN", "s3cret")
+    response = client.get(
+        "/cluster/snapshot", headers={"Authorization": "Bearer wrong-token"}
+    )
+    assert response.status_code == 401
+
+
+def test_token_set_snapshot_with_correct_header_returns_200(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_TOKEN", "s3cret")
+    response = client.get(
+        "/cluster/snapshot", headers={"Authorization": "Bearer s3cret"}
+    )
+    assert response.status_code == 200
+
+
+def test_token_set_metrics_without_header_returns_401(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_TOKEN", "s3cret")
+    response = client.get("/metrics")
+    assert response.status_code == 401
+
+
+def test_token_set_metrics_with_correct_header_returns_200(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_TOKEN", "s3cret")
+    response = client.get("/metrics", headers={"Authorization": "Bearer s3cret"})
+    assert response.status_code == 200
+
+
+def test_token_set_healthz_stays_open_always(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/healthz and / must stay open even when a token is configured."""
+    monkeypatch.setenv("CONTROLLER_API_TOKEN", "s3cret")
+    response = client.get("/healthz")
+    assert response.status_code == 200
+
+
+def test_token_set_root_stays_open_always(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_TOKEN", "s3cret")
+    response = client.get("/")
+    assert response.status_code == 200

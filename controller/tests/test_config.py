@@ -155,3 +155,117 @@ def test_env_override_slurm_ssh_key_file() -> None:
         run_cfg_expr("cfg.slurm_ssh_key_file", {"SLURM_SSH_KEY_FILE": "/home/user/.ssh/id_rsa"})
         == "/home/user/.ssh/id_rsa"
     )
+
+
+# ---------------------------------------------------------------------------
+# _parse_bool — fail-safe dry_run parsing (unrecognized input -> default, never raises)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_bool_true_values() -> None:
+    from controller.config import _parse_bool
+
+    for v in ["true", "TRUE", " true ", "1", "yes", "on", "ON", "Yes"]:
+        assert _parse_bool(v, False) is True, f"expected True for {v!r}"
+
+
+def test_parse_bool_false_values() -> None:
+    from controller.config import _parse_bool
+
+    for v in ["false", "FALSE", " false ", "0", "no", "off", "OFF", "No"]:
+        assert _parse_bool(v, True) is False, f"expected False for {v!r}"
+
+
+def test_parse_bool_garbage_returns_default_true() -> None:
+    from controller.config import _parse_bool
+
+    for v in ["ture", "", "true1", "\n", "maybe", "yesno"]:
+        assert _parse_bool(v, True) is True, f"expected default True for garbage {v!r}"
+
+
+def test_parse_bool_garbage_returns_default_false() -> None:
+    from controller.config import _parse_bool
+
+    for v in ["ture", "", "true1", "\n", "maybe"]:
+        assert _parse_bool(v, False) is False, f"expected default False for garbage {v!r}"
+
+
+def test_parse_bool_never_raises_on_arbitrary_input() -> None:
+    from controller.config import _parse_bool
+
+    weird_inputs = ["🎉", "None", "null", "  ", "\t\n", "TrUe1", "0x1"]
+    for v in weird_inputs:
+        # Must not raise regardless of default
+        assert _parse_bool(v, True) in (True, False)
+        assert _parse_bool(v, False) in (True, False)
+
+
+# ---------------------------------------------------------------------------
+# dry_run via CONTROLLER_DRY_RUN env — fail-open/fail-safe behavior end to end
+# ---------------------------------------------------------------------------
+
+
+def test_env_dry_run_true_variants_stay_dry_run() -> None:
+    for v in ["true", "TRUE", " true ", "1", "yes"]:
+        assert run_cfg_expr("cfg.dry_run", {"CONTROLLER_DRY_RUN": v}) == "True"
+
+
+def test_env_dry_run_false_variants_go_live() -> None:
+    for v in ["false", "0", "no"]:
+        assert run_cfg_expr("cfg.dry_run", {"CONTROLLER_DRY_RUN": v}) == "False"
+
+
+def test_env_dry_run_garbage_defaults_to_safe_true() -> None:
+    """Garbage/unknown CONTROLLER_DRY_RUN must never accidentally go live."""
+    for v in ["ture", "", "true1", "garbage"]:
+        assert run_cfg_expr("cfg.dry_run", {"CONTROLLER_DRY_RUN": v}) == "True"
+
+
+# ---------------------------------------------------------------------------
+# exec_timeout_sec / ssh_strict_host_key defaults
+# ---------------------------------------------------------------------------
+
+
+def test_default_exec_timeout_sec_is_30() -> None:
+    assert run_cfg_expr("cfg.exec_timeout_sec") == "30"
+
+
+def test_env_override_exec_timeout_sec() -> None:
+    assert run_cfg_expr("cfg.exec_timeout_sec", {"SLURM_EXEC_TIMEOUT_SEC": "5"}) == "5"
+
+
+def test_default_ssh_strict_host_key_is_true() -> None:
+    assert run_cfg_expr("cfg.ssh_strict_host_key") == "True"
+
+
+def test_env_override_ssh_strict_host_key_false() -> None:
+    assert (
+        run_cfg_expr("cfg.ssh_strict_host_key", {"SLURM_SSH_STRICT_HOST_KEY": "false"}) == "False"
+    )
+
+
+# ---------------------------------------------------------------------------
+# floor <= ceil validation (__post_init__)
+# ---------------------------------------------------------------------------
+
+
+def test_floor_greater_than_ceil_raises_value_error() -> None:
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="max_jobs_floor"):
+        ControllerConfig(max_jobs_floor=200, max_jobs_ceil=128)
+
+
+def test_floor_equal_to_ceil_is_allowed() -> None:
+    from controller.config import ControllerConfig
+
+    cfg = ControllerConfig(max_jobs_floor=10, max_jobs_ceil=10)
+    assert cfg.max_jobs_floor == cfg.max_jobs_ceil == 10
+
+
+def test_normal_floor_ceil_does_not_raise() -> None:
+    from controller.config import ControllerConfig
+
+    cfg = ControllerConfig(max_jobs_floor=2, max_jobs_ceil=128)
+    assert cfg.max_jobs_floor == 2
+    assert cfg.max_jobs_ceil == 128
