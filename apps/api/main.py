@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import secrets
 import time
@@ -15,6 +16,8 @@ from starlette.responses import JSONResponse, Response
 from controller import metrics as _metrics  # noqa: F401  # registers adaptive_* gauges
 from controller.collectors.slurm import SlurmCollector
 from controller.config import ControllerConfig
+
+LOG = logging.getLogger("adaptive-wlm-controller.api")
 
 app = FastAPI(title="adaptive-wlm-controller", version="0.1.0")
 cfg = ControllerConfig()
@@ -186,7 +189,26 @@ def healthz() -> dict[str, str]:
 
 @app.get("/cluster/snapshot", dependencies=[Depends(require_api_token)])
 def cluster_snapshot() -> dict:
-    snap = collector.snapshot()
+    """Live cluster snapshot; 503 (not a raw 500) when the scheduler is unreachable.
+
+    The collector deliberately raises on Slurm CLI failure (fail-loud — see the
+    harden/gaps-security "collector no longer swallows Slurm failures" fix), so a
+    scheduler outage used to surface here as an unhandled exception: HTTP 500 with
+    a traceback dumped to the server log and FastAPI's opaque "Internal Server
+    Error" body. Map it to a structured 503 Service Unavailable instead — the
+    semantically correct status for a dependency outage — with a GENERIC detail
+    string. The underlying exception text (command lines, hostnames, stderr) is
+    logged server-side only, never echoed to the client, so no scheduler
+    internals leak through the unauthenticated-by-default endpoint.
+    """
+    try:
+        snap = collector.snapshot()
+    except Exception:
+        LOG.exception("cluster snapshot failed: scheduler query error")
+        raise HTTPException(
+            status_code=503,
+            detail="cluster snapshot unavailable: scheduler query failed",
+        ) from None
     return asdict(snap)
 
 

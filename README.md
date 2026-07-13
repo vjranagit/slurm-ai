@@ -8,7 +8,7 @@ tabular Q-learning RL optionally), enforces safety bounds and cooldowns, and —
 logs, a REST control-plane API, and a lightweight dashboard. Slurm-only for now; IBM LSF is a
 planned follow-on.
 
-![tests](https://img.shields.io/badge/tests-182%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-328%20passing-brightgreen)
 ![ruff](https://img.shields.io/badge/ruff-clean-brightgreen)
 
 ---
@@ -215,7 +215,7 @@ pip install -e ".[dev]"
 # Lint
 ruff check .
 
-# Full test suite (182 tests)
+# Full test suite (328 tests)
 pytest -q
 
 # Single test file
@@ -358,7 +358,7 @@ construction; `controller/main.py` calls it, so no loop changes are required to 
 ```bash
 pip install -e ".[dev]"
 ruff check .                         # must be clean
-pytest -q                            # 182 tests, all must pass
+pytest -q                            # 328 tests, all must pass
 ```
 
 CI runs exactly: `ruff check . && pytest -q`.
@@ -409,6 +409,11 @@ in `docs/E2E_RESULTS.md`.
   (`allow_credentials=False`), so the unsafe "wildcard origin + credentials" combination cannot be
   configured — a `*` allowlist is accepted but stays credential-less. Auth still applies: a
   cross-origin caller of a token-protected endpoint must send the bearer token itself.
+- A scheduler outage surfaces on `/cluster/snapshot` as a structured `503` with a generic detail
+  (the raw CLI error is logged server-side only, never echoed to clients); `/healthz` stays `200`
+  because scheduler down ≠ API down.
+- Dependency hygiene: CI runs `pip-audit` on every build, and `.github/dependabot.yml` opens
+  weekly update PRs for `pip` and `github-actions` dependencies.
 
 Before running in any shared or production environment:
 

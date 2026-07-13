@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 pip install -e ".[dev]"      # editable install with dev tools
 
 ruff check .                 # lint (line-length 100)
-pytest -q                    # 182 tests (CI runs exactly: ruff check . && pytest -q)
+pytest -q                    # 328 tests (CI runs exactly: ruff check . && pytest -q)
 pytest controller/tests/test_actuator.py -q          # single file
 pytest controller/tests/test_rl.py::test_bounds -q   # single test (example)
 

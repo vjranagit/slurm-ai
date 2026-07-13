@@ -589,3 +589,233 @@ def test_specific_origin_never_allows_credentials(
     client = _build_cors_app(monkeypatch, "https://dash.example")
     resp = client.get("/ping", headers={"Origin": "https://dash.example"})
     assert "access-control-allow-credentials" not in resp.headers
+
+
+# ---------------------------------------------------------------------------
+# /cluster/snapshot error handling — scheduler outage maps to a structured 503,
+# never an unhandled 500. The collector raises on Slurm CLI failure by design
+# (fail-loud, harden/gaps-security); the endpoint must translate that into
+# 503 Service Unavailable with a GENERIC detail (no command lines / stderr /
+# hostnames leaking through the unauthenticated-by-default endpoint).
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_collector_failure_returns_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apps.api.main as api_module
+    from fastapi.testclient import TestClient as TC
+
+    monkeypatch.setattr(
+        api_module.collector,
+        "snapshot",
+        MagicMock(side_effect=RuntimeError("sinfo: command not found")),
+    )
+    client = TC(api_module.app)
+    response = client.get("/cluster/snapshot")
+    assert response.status_code == 503
+
+
+def test_snapshot_failure_detail_is_generic(monkeypatch: pytest.MonkeyPatch) -> None:
+    import apps.api.main as api_module
+    from fastapi.testclient import TestClient as TC
+
+    monkeypatch.setattr(
+        api_module.collector,
+        "snapshot",
+        MagicMock(side_effect=RuntimeError("boom")),
+    )
+    client = TC(api_module.app)
+    response = client.get("/cluster/snapshot")
+    assert response.json() == {"detail": "cluster snapshot unavailable: scheduler query failed"}
+
+
+def test_snapshot_failure_does_not_leak_exception_internals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The raw exception text (CLI command, stderr, ssh host) must never reach the client."""
+    import apps.api.main as api_module
+    from fastapi.testclient import TestClient as TC
+
+    secret_detail = "ssh admin@cluster-head-01 bash -lc 'sinfo -h': Connection refused"
+    monkeypatch.setattr(
+        api_module.collector,
+        "snapshot",
+        MagicMock(side_effect=RuntimeError(secret_detail)),
+    )
+    client = TC(api_module.app)
+    response = client.get("/cluster/snapshot")
+    assert response.status_code == 503
+    assert "cluster-head-01" not in response.text
+    assert "sinfo" not in response.text
+    assert "Connection refused" not in response.text
+
+
+def test_snapshot_failure_leaves_healthz_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A scheduler outage is a dependency failure — the API process itself stays healthy."""
+    import apps.api.main as api_module
+    from fastapi.testclient import TestClient as TC
+
+    monkeypatch.setattr(
+        api_module.collector,
+        "snapshot",
+        MagicMock(side_effect=RuntimeError("scheduler down")),
+    )
+    client = TC(api_module.app)
+    assert client.get("/cluster/snapshot").status_code == 503
+    assert client.get("/healthz").status_code == 200
+
+
+def test_snapshot_recovers_after_transient_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First call fails (503), scheduler comes back, second call serves data (200)."""
+    import apps.api.main as api_module
+    from fastapi.testclient import TestClient as TC
+
+    snap = make_fixed_snapshot()
+    monkeypatch.setattr(
+        api_module.collector,
+        "snapshot",
+        MagicMock(side_effect=[RuntimeError("transient outage"), snap]),
+    )
+    client = TC(api_module.app)
+    assert client.get("/cluster/snapshot").status_code == 503
+    response = client.get("/cluster/snapshot")
+    assert response.status_code == 200
+    assert response.json()["pending_jobs"] == 10
+
+
+def test_snapshot_503_still_requires_token_when_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auth runs before the handler: with a token set and no header, an outage
+    must surface as 401 (auth rejection), not 503 (outage detail), so an
+    unauthenticated caller cannot probe scheduler health."""
+    import apps.api.main as api_module
+    from fastapi.testclient import TestClient as TC
+
+    monkeypatch.setenv("CONTROLLER_API_TOKEN", "s3cret")
+    monkeypatch.setattr(
+        api_module.collector,
+        "snapshot",
+        MagicMock(side_effect=RuntimeError("outage")),
+    )
+    client = TC(api_module.app)
+    assert client.get("/cluster/snapshot").status_code == 401
+    response = client.get(
+        "/cluster/snapshot", headers={"Authorization": "Bearer s3cret"}
+    )
+    assert response.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# RateLimitMiddleware edge cases not covered by the basic-limit tests above:
+# fixed-window rollover, stale-entry cleanup, and the request.client-is-None
+# bucket ("unknown").
+# ---------------------------------------------------------------------------
+
+
+def test_rate_limit_window_rollover_resets_quota(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exhausting the quota in minute M must not block requests in minute M+1."""
+    import apps.api.main as api_module
+
+    monkeypatch.setenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", "1")
+    base = 1_700_000_040.0  # arbitrary fixed epoch, mid-minute
+    monkeypatch.setattr(api_module.time, "time", lambda: base)
+    assert client.get("/healthz").status_code == 200
+    assert client.get("/healthz").status_code == 429  # quota spent in this window
+
+    monkeypatch.setattr(api_module.time, "time", lambda: base + 60.0)  # next minute
+    assert client.get("/healthz").status_code == 200
+
+
+def test_rate_limit_stale_entries_cleaned_up(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Entries from past windows are evicted once the dict exceeds the cap, so a
+    long-lived process with many distinct clients cannot grow it unbounded."""
+    import apps.api.main as api_module
+
+    monkeypatch.setenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", "100")
+    monkeypatch.setattr(api_module, "_RATE_LIMIT_WINDOWS_MAX_ENTRIES", 3)
+
+    now_min = int(api_module.time.time() // 60)
+    stale_window = now_min - 5
+    for i in range(4):  # 4 stale entries > cap of 3
+        api_module._RATE_LIMIT_WINDOWS[f"10.9.8.{i}"] = (stale_window, 42)
+
+    assert client.get("/healthz").status_code == 200
+
+    for i in range(4):
+        assert f"10.9.8.{i}" not in api_module._RATE_LIMIT_WINDOWS, "stale entry must be evicted"
+    assert "testclient" in api_module._RATE_LIMIT_WINDOWS  # current client survives
+
+
+def test_rate_limit_current_window_entries_survive_cleanup(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cleanup only evicts PAST-window entries; active clients keep their counts."""
+    import apps.api.main as api_module
+
+    monkeypatch.setenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", "100")
+    monkeypatch.setattr(api_module, "_RATE_LIMIT_WINDOWS_MAX_ENTRIES", 2)
+
+    now_min = int(api_module.time.time() // 60)
+    for i in range(3):  # current-window entries beyond the cap
+        api_module._RATE_LIMIT_WINDOWS[f"10.7.7.{i}"] = (now_min, 7)
+
+    assert client.get("/healthz").status_code == 200
+
+    for i in range(3):
+        assert api_module._RATE_LIMIT_WINDOWS.get(f"10.7.7.{i}") == (now_min, 7)
+
+
+def test_rate_limit_client_none_buckets_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ASGI scope without a client (e.g. some proxies/test harnesses) must not
+    crash the middleware — it buckets under the shared "unknown" key."""
+    import apps.api.main as api_module
+    from fastapi.testclient import TestClient as TC
+
+    monkeypatch.setenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", "100")
+    client = TC(api_module.app, client=None)  # scope["client"] = None
+    assert client.get("/healthz").status_code == 200
+    assert "unknown" in api_module._RATE_LIMIT_WINDOWS
+
+
+# ---------------------------------------------------------------------------
+# require_api_token scheme edge cases (constant-time compare is covered by the
+# 401/200 tests above; these pin the Authorization-header parsing rules).
+# ---------------------------------------------------------------------------
+
+
+def test_token_bearer_scheme_is_case_insensitive(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_TOKEN", "s3cret")
+    response = client.get(
+        "/cluster/snapshot", headers={"Authorization": "BEARER s3cret"}
+    )
+    assert response.status_code == 200
+
+
+def test_token_non_bearer_scheme_rejected(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_TOKEN", "s3cret")
+    response = client.get(
+        "/cluster/snapshot", headers={"Authorization": "Basic s3cret"}
+    )
+    assert response.status_code == 401
+
+
+def test_token_bare_bearer_without_token_rejected(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_TOKEN", "s3cret")
+    response = client.get("/cluster/snapshot", headers={"Authorization": "Bearer"})
+    assert response.status_code == 401

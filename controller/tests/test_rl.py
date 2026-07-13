@@ -521,3 +521,19 @@ def test_config_rl_fields_defaults() -> None:
     assert cfg.rl_gamma == pytest.approx(0.9)
     assert cfg.rl_epsilon == pytest.approx(0.1)
     assert cfg.rl_train_episodes == 300
+
+
+def test_load_qtable_drops_raw_json_infinity_literals(
+    tmp_path: pytest.TempPathFactory,
+) -> None:
+    """Bare ``Infinity`` / ``-Infinity`` literals in the qtable FILE must be
+    dropped by load_qtable, exactly like ``NaN`` (all three parse as floats via
+    Python's json module). Complements
+    test_json_to_qtable_skips_nan_inf_action_values, which only exercises the
+    raw-literal path for NaN."""
+    path = str(tmp_path / "inf_qtable.json")  # type: ignore[operator]
+    with open(path, "w") as fh:
+        fh.write('{"0": {"0": [Infinity, 1.0, 2.0]}, "1": {"1": [-Infinity, 1.0, 2.0]}}')
+
+    result = load_qtable(path)
+    assert result == {}, "entries with Infinity/-Infinity Q-values must be dropped"
