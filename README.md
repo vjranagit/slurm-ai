@@ -391,7 +391,7 @@ in `docs/E2E_RESULTS.md`.
 
 ## Security and deployment
 
-**Authentication is optional (off by default) and there is still no CORS policy.**
+**Authentication is optional (off by default); rate limiting and CORS are configurable.**
 
 - `GET /cluster/snapshot` returns live queue data from the Slurm cluster.
 - `GET /metrics` returns Prometheus gauge values.
@@ -402,8 +402,13 @@ in `docs/E2E_RESULTS.md`.
 - Every route is rate-limited per client IP: `CONTROLLER_API_RATE_LIMIT_PER_MIN` (default `120`)
   requests/minute, `429` past the limit. Set to `0` to disable. In-memory, per-process only — not
   shared across multiple uvicorn workers/replicas.
-- There is still no CORS policy — the API is not intended to be called cross-origin from a
-  browser; put a reverse proxy in front if you need that.
+- CORS is off by default and driven by an allowlist: `CONTROLLER_API_ALLOWED_ORIGINS`
+  (comma-separated). Empty/unset = same-origin only (no `Access-Control-Allow-Origin` header is
+  emitted, so browsers block all cross-origin reads). List the exact origins your dashboard is
+  served from to permit them. Credentials are never allowed on cross-origin requests
+  (`allow_credentials=False`), so the unsafe "wildcard origin + credentials" combination cannot be
+  configured — a `*` allowlist is accepted but stays credential-less. Auth still applies: a
+  cross-origin caller of a token-protected endpoint must send the bearer token itself.
 
 Before running in any shared or production environment:
 

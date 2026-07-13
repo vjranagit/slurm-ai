@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse, Response
 
 from controller import metrics as _metrics  # noqa: F401  # registers adaptive_* gauges
@@ -95,7 +96,59 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+def _allowed_origins() -> list[str]:
+    """Parse CONTROLLER_API_ALLOWED_ORIGINS (comma-separated) fail-safe.
+
+    Mirrors the fail-safe env-parsing style used by _rate_limit_per_min / _parse_bool:
+    never raises, and an unset/blank value yields the SAFE default — here an empty
+    list, meaning same-origin only. Whitespace around each origin is stripped and
+    empty entries are dropped, so "https://a.example ,, https://b.example" ->
+    ["https://a.example", "https://b.example"].
+    """
+    raw = os.getenv("CONTROLLER_API_ALLOWED_ORIGINS", "")
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
+def configure_cors(fastapi_app: FastAPI) -> None:
+    """Attach CORS from the CONTROLLER_API_ALLOWED_ORIGINS allowlist, fail-safe.
+
+    Closes the "no CORS policy" gap previously flagged in README's "Security and
+    deployment" section.
+
+    - Empty/unset allowlist -> NO CORSMiddleware is attached at all: no
+      Access-Control-Allow-Origin header is ever emitted, so browsers block every
+      cross-origin read. This is the safe same-origin-only default (the prior
+      behavior), not a silent wildcard.
+    - When set, only the listed origins are echoed back; any other Origin is
+      rejected (Starlette answers a disallowed preflight with 400 and omits the
+      allow-origin header on simple requests).
+    - allow_credentials is hardcoded False. This API authenticates with a bearer
+      token in the Authorization header, never cookies, so credentialed CORS is
+      never needed — and pinning it False makes the forbidden "Allow-Origin: * with
+      Allow-Credentials: true" combination unreachable even if an operator sets
+      CONTROLLER_API_ALLOWED_ORIGINS=* (the CORS spec bans that pairing; browsers
+      reject it, and it would broadcast credentialed responses to any site).
+
+    Unlike the rate limiter, the allowlist is read once here at app construction
+    (Starlette's CORSMiddleware captures it), not per request — origins are
+    deployment config that does not change at runtime.
+    """
+    origins = _allowed_origins()
+    if not origins:
+        return
+    fastapi_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=False,
+        allow_methods=["GET", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+
 app.add_middleware(RateLimitMiddleware)
+# CORS is added after the rate limiter so it wraps outermost: a valid preflight is
+# answered before the request reaches the rate limiter / route handlers.
+configure_cors(app)
 
 app.mount("/ui", StaticFiles(directory="apps/dashboard", html=True), name="ui")
 

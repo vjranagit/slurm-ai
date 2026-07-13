@@ -409,3 +409,183 @@ def test_rate_limit_tracks_clients_independently(
 
     # client B is a distinct source IP — must still have its own fresh quota.
     assert client_b.get("/healthz").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# CORS allowlist (CONTROLLER_API_ALLOWED_ORIGINS) — configure_cors().
+# Closes the "no CORS policy" gap the README used to flag. CORSMiddleware
+# captures the allowlist at construction, so each test sets the env, builds a
+# fresh app + trivial route, and calls configure_cors() against it.
+# ---------------------------------------------------------------------------
+
+
+def _build_cors_app(monkeypatch: pytest.MonkeyPatch, origins_env: str | None) -> TestClient:
+    import apps.api.main as api_module
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient as TC
+
+    if origins_env is None:
+        monkeypatch.delenv("CONTROLLER_API_ALLOWED_ORIGINS", raising=False)
+    else:
+        monkeypatch.setenv("CONTROLLER_API_ALLOWED_ORIGINS", origins_env)
+
+    test_app = FastAPI()
+
+    @test_app.get("/ping")
+    def ping() -> dict[str, bool]:
+        return {"ok": True}
+
+    api_module.configure_cors(test_app)
+    return TC(test_app)
+
+
+# --- _allowed_origins() fail-safe parsing (mirrors _rate_limit_per_min style) ---
+
+
+def test_allowed_origins_unset_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    import apps.api.main as api_module
+
+    monkeypatch.delenv("CONTROLLER_API_ALLOWED_ORIGINS", raising=False)
+    assert api_module._allowed_origins() == []
+
+
+def test_allowed_origins_blank_and_comma_only_returns_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apps.api.main as api_module
+
+    monkeypatch.setenv("CONTROLLER_API_ALLOWED_ORIGINS", "  , ,")
+    assert api_module._allowed_origins() == []
+
+
+def test_allowed_origins_strips_whitespace_and_drops_empty_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apps.api.main as api_module
+
+    monkeypatch.setenv(
+        "CONTROLLER_API_ALLOWED_ORIGINS", " https://a.example ,, https://b.example "
+    )
+    assert api_module._allowed_origins() == ["https://a.example", "https://b.example"]
+
+
+# --- Preflight (OPTIONS) behavior ---
+
+
+def test_preflight_options_allowed_origin_returns_allow_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _build_cors_app(monkeypatch, "https://dash.example")
+    resp = client.options(
+        "/ping",
+        headers={
+            "Origin": "https://dash.example",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "https://dash.example"
+
+
+def test_preflight_options_disallowed_origin_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A preflight from an origin not on the allowlist must be rejected (400) with
+    no allow-origin echo — the browser will then block the real request."""
+    client = _build_cors_app(monkeypatch, "https://dash.example")
+    resp = client.options(
+        "/ping",
+        headers={
+            "Origin": "https://evil.example",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert resp.status_code == 400
+    assert "access-control-allow-origin" not in resp.headers
+
+
+def test_preflight_allows_authorization_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cross-origin callers of a token-protected endpoint must be able to send
+    the Authorization header, so it has to be in the preflight allow-headers."""
+    client = _build_cors_app(monkeypatch, "https://dash.example")
+    resp = client.options(
+        "/ping",
+        headers={
+            "Origin": "https://dash.example",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization",
+        },
+    )
+    assert resp.status_code == 200
+    assert "authorization" in resp.headers.get("access-control-allow-headers", "").lower()
+
+
+# --- Simple (non-preflight) request behavior ---
+
+
+def test_simple_get_allowed_origin_has_allow_origin_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _build_cors_app(monkeypatch, "https://dash.example")
+    resp = client.get("/ping", headers={"Origin": "https://dash.example"})
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "https://dash.example"
+
+
+def test_simple_get_disallowed_origin_omits_allow_origin_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _build_cors_app(monkeypatch, "https://dash.example")
+    resp = client.get("/ping", headers={"Origin": "https://evil.example"})
+    # The request itself still succeeds server-side; the browser blocks the read
+    # because no matching Access-Control-Allow-Origin header comes back.
+    assert resp.status_code == 200
+    assert "access-control-allow-origin" not in resp.headers
+
+
+def test_multiple_origins_each_individually_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _build_cors_app(monkeypatch, "https://a.example, https://b.example")
+    for origin in ("https://a.example", "https://b.example"):
+        resp = client.get("/ping", headers={"Origin": origin})
+        assert resp.headers["access-control-allow-origin"] == origin
+
+
+# --- Same-origin default: unset/blank allowlist attaches no CORS at all ---
+
+
+def test_unset_allowlist_emits_no_cors_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _build_cors_app(monkeypatch, None)
+    resp = client.get("/ping", headers={"Origin": "https://dash.example"})
+    assert resp.status_code == 200
+    assert "access-control-allow-origin" not in resp.headers
+
+
+def test_blank_allowlist_emits_no_cors_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _build_cors_app(monkeypatch, "   ")
+    resp = client.get("/ping", headers={"Origin": "https://dash.example"})
+    assert "access-control-allow-origin" not in resp.headers
+
+
+# --- Safety invariant: never wildcard-origin WITH credentials ---
+
+
+def test_wildcard_allowlist_never_allows_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A '*' allowlist may echo '*' but must NEVER also set
+    Access-Control-Allow-Credentials: true (the CORS-spec-forbidden pairing)."""
+    client = _build_cors_app(monkeypatch, "*")
+    resp = client.get("/ping", headers={"Origin": "https://anything.example"})
+    assert resp.status_code == 200
+    assert resp.headers.get("access-control-allow-origin") == "*"
+    assert "access-control-allow-credentials" not in resp.headers
+
+
+def test_specific_origin_never_allows_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _build_cors_app(monkeypatch, "https://dash.example")
+    resp = client.get("/ping", headers={"Origin": "https://dash.example"})
+    assert "access-control-allow-credentials" not in resp.headers
