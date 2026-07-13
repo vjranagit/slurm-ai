@@ -15,6 +15,8 @@ def make_runner(
     ssh_host: str = "",
     ssh_user: str = "",
     ssh_key_file: str = "",
+    exec_timeout_sec: int = 30,
+    ssh_strict_host_key: bool = True,
 ) -> SlurmCommandRunner:
     cfg = SlurmExecConfig(
         mode=mode,
@@ -23,6 +25,8 @@ def make_runner(
         ssh_host=ssh_host,
         ssh_user=ssh_user,
         ssh_key_file=ssh_key_file,
+        exec_timeout_sec=exec_timeout_sec,
+        ssh_strict_host_key=ssh_strict_host_key,
     )
     return SlurmCommandRunner(cfg)
 
@@ -108,10 +112,23 @@ def test_build_ssh_mode_without_key_file_omits_identity_flag() -> None:
 
 
 def test_build_ssh_mode_includes_strict_host_checking_options() -> None:
+    """Default (ssh_strict_host_key=True) is secure-by-default: StrictHostKeyChecking=yes."""
     runner = make_runner("ssh", ssh_host="myhost.example.com")
     cmd = runner._build("sinfo")
-    assert "StrictHostKeyChecking=accept-new" in cmd
+    assert "StrictHostKeyChecking=yes" in cmd
     assert "BatchMode=yes" in cmd
+
+
+def test_build_ssh_mode_strict_true_uses_strict_yes() -> None:
+    runner = make_runner("ssh", ssh_host="myhost.example.com", ssh_strict_host_key=True)
+    cmd = runner._build("sinfo")
+    assert "StrictHostKeyChecking=yes" in cmd
+
+
+def test_build_ssh_mode_strict_false_uses_accept_new() -> None:
+    runner = make_runner("ssh", ssh_host="myhost.example.com", ssh_strict_host_key=False)
+    cmd = runner._build("sinfo")
+    assert "StrictHostKeyChecking=accept-new" in cmd
 
 
 def test_build_ssh_mode_wraps_command_in_bash_lc() -> None:
@@ -210,3 +227,32 @@ def test_run_check_true_nonzero_exit_returns_false() -> None:
     runner = make_runner("local")
     ok, _out = runner.run("false", check=True)
     assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# run() — subprocess timeout: never raises, returns (False, "timeout...")
+# ---------------------------------------------------------------------------
+
+
+def test_run_local_timeout_returns_false_and_timeout_message() -> None:
+    runner = make_runner("local", exec_timeout_sec=1)
+    ok, out = runner.run("sleep 5", check=True)
+    assert ok is False
+    assert "timeout" in out.lower()
+
+
+def test_run_local_timeout_does_not_raise() -> None:
+    """A timing-out command must never propagate an exception."""
+    runner = make_runner("local", exec_timeout_sec=1)
+    try:
+        ok, _out = runner.run("sleep 5", check=False)
+    except Exception as exc:  # noqa: BLE001
+        pytest.fail(f"run() raised on timeout instead of returning False: {exc}")
+    assert ok is False
+
+
+def test_run_local_within_timeout_succeeds() -> None:
+    runner = make_runner("local", exec_timeout_sec=5)
+    ok, out = runner.run("echo fast", check=True)
+    assert ok is True
+    assert "fast" in out

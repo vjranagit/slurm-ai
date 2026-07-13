@@ -239,6 +239,259 @@ def test_aimd_fallback_for_unseen_states() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_load_qtable_corrupt_json_returns_empty_no_raise(tmp_path: pytest.TempPathFactory) -> None:
+    """A truncated/corrupt JSON file must not raise — load_qtable falls back to {}."""
+    path = str(tmp_path / "corrupt.json")  # type: ignore[operator]
+    with open(path, "w") as fh:
+        fh.write('{"0": {"0": [0.1, 0.2, 0.3]')  # truncated JSON, missing closing braces
+
+    result = load_qtable(path)
+    assert result == {}
+
+
+def test_load_qtable_non_json_garbage_returns_empty(tmp_path: pytest.TempPathFactory) -> None:
+    path = str(tmp_path / "garbage.json")  # type: ignore[operator]
+    with open(path, "w") as fh:
+        fh.write("this is not json at all {{{")
+
+    result = load_qtable(path)
+    assert result == {}
+
+
+def test_load_qtable_corrupt_file_falls_back_to_aimd_behavior() -> None:
+    """A corrupt qtable path used by RLTuner must behave exactly like AIMD (no crash)."""
+    cfg = _make_cfg(rl_qtable_path="__corrupt_will_be_created__")
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
+        fh.write("{not valid json")
+        corrupt_path = fh.name
+
+    cfg = _make_cfg(rl_qtable_path=corrupt_path)
+    rl_tuner = RLTuner(cfg)
+    aimd_tuner = AimdTuner(cfg)
+
+    rng = random.Random(11)
+    for _ in range(100):
+        current = rng.randint(cfg.max_jobs_floor, cfg.max_jobs_ceil)
+        sat = rng.random()
+        assert rl_tuner.next_max_jobs(current, sat) == aimd_tuner.next_max_jobs(current, sat)
+
+
+def test_json_to_qtable_skips_wrong_length_action_list() -> None:
+    """An entry whose action-value list length != _N_ACTIONS is ignored, not crashed on."""
+    from controller.tuner.rl import _json_to_qtable
+
+    data = {
+        "0": {"0": [0.1, 0.2, 0.3]},  # valid: length 3
+        "1": {"1": [0.1, 0.2]},  # malformed: length 2 -> must be skipped
+        "2": {"2": [0.1, 0.2, 0.3, 0.4]},  # malformed: length 4 -> must be skipped
+    }
+    qtable = _json_to_qtable(data)  # type: ignore[arg-type]
+    assert (0, 0) in qtable
+    assert (1, 1) not in qtable
+    assert (2, 2) not in qtable
+    assert len(qtable) == 1
+
+
+def test_json_to_qtable_skips_nan_inf_action_values(
+    tmp_path: pytest.TempPathFactory,
+) -> None:
+    """NaN/inf/-inf Q-values must be dropped, not accepted as valid floats.
+
+    Python's json module parses the bare literals NaN/Infinity/-Infinity by
+    default, so a Q-value of NaN would previously pass the
+    isinstance(v, (int, float)) check and silently corrupt the greedy argmax
+    in next_max_jobs (NaN comparisons are always False, biasing selection
+    toward the first/DECREASE action). Such entries must now be skipped,
+    exactly like a wrong-length entry, falling back to AIMD for that state.
+    """
+    from controller.tuner.rl import _json_to_qtable
+
+    # Raw JSON string with a bare NaN literal (valid per Python's json parser).
+    path = str(tmp_path / "nan_qtable.json")  # type: ignore[operator]
+    with open(path, "w") as fh:
+        fh.write('{"0": {"0": [NaN, 1.0, 2.0]}}')
+
+    result = load_qtable(path)
+    assert result == {}, "entry with NaN Q-value must be dropped"
+
+    # Also exercise inf / -inf directly via _json_to_qtable with float().
+    data = {
+        "0": {"0": [float("nan"), 1.0, 2.0]},
+        "1": {"1": [float("inf"), 0.5, 0.2]},
+        "2": {"2": [float("-inf"), 0.5, 0.2]},
+        "3": {"3": [0.1, 0.5, 0.9]},  # valid finite entry, must be kept
+    }
+    qtable = _json_to_qtable(data)  # type: ignore[arg-type]
+    assert (0, 0) not in qtable
+    assert (1, 1) not in qtable
+    assert (2, 2) not in qtable
+    assert (3, 3) in qtable
+    assert qtable[(3, 3)] == [0.1, 0.5, 0.9]
+    assert len(qtable) == 1
+
+    # RLTuner must still construct and stay in bounds when a NaN entry is
+    # present alongside otherwise-valid data.
+    cfg = _make_cfg(rl_qtable_path=path)
+    tuner = RLTuner(cfg)
+    rng = random.Random(17)
+    for _ in range(200):
+        current = rng.randint(cfg.max_jobs_floor, cfg.max_jobs_ceil)
+        sat = rng.random()
+        out = tuner.next_max_jobs(current, sat)
+        assert cfg.max_jobs_floor <= out <= cfg.max_jobs_ceil
+
+
+def test_json_to_qtable_normal_finite_table_loads_fully_no_regression() -> None:
+    """A normal Q-table with only finite values must load every entry unchanged."""
+    from controller.tuner.rl import _json_to_qtable
+
+    data = {
+        "0": {"0": [0.1, 0.5, 0.9], "1": [1.0, -1.0, 0.0]},
+        "1": {"2": [3.5, 2.5, -2.5]},
+        "4": {"5": [0.0, 0.0, 0.0]},
+    }
+    qtable = _json_to_qtable(data)  # type: ignore[arg-type]
+    assert len(qtable) == 4
+    assert qtable[(0, 0)] == [0.1, 0.5, 0.9]
+    assert qtable[(0, 1)] == [1.0, -1.0, 0.0]
+    assert qtable[(1, 2)] == [3.5, 2.5, -2.5]
+    assert qtable[(4, 5)] == [0.0, 0.0, 0.0]
+
+
+def test_malformed_qtable_entry_does_not_crash_next_max_jobs(
+    tmp_path: pytest.TempPathFactory,
+) -> None:
+    """A qtable with a malformed entry must not raise IndexError on next_max_jobs."""
+    import json as _json
+
+    path = str(tmp_path / "malformed.json")  # type: ignore[operator]
+    with open(path, "w") as fh:
+        _json.dump({"0": {"0": [0.1, 0.2]}, "1": {"1": [0.5, 0.1, 0.9]}}, fh)
+
+    cfg = _make_cfg(rl_qtable_path=path)
+    tuner = RLTuner(cfg)
+
+    rng = random.Random(3)
+    for _ in range(200):
+        current = rng.randint(cfg.max_jobs_floor, cfg.max_jobs_ceil)
+        sat = rng.random()
+        result = tuner.next_max_jobs(current, sat)
+        assert cfg.max_jobs_floor <= result <= cfg.max_jobs_ceil
+
+
+def test_json_to_qtable_inner_value_not_dict_returns_empty() -> None:
+    """{'0': 5} — inner value is an int, not a dict of maxjobs-buckets.
+
+    Previously crashed with AttributeError: 'int' object has no attribute 'items'.
+    Must now be skipped, yielding an empty table (no raise).
+    """
+    from controller.tuner.rl import _json_to_qtable
+
+    qtable = _json_to_qtable({"0": 5})  # type: ignore[arg-type]
+    assert qtable == {}
+
+
+def test_json_to_qtable_action_value_not_list_returns_empty() -> None:
+    """{'0': {'0': 5}} — action value is an int, not a list of Q-values.
+
+    Previously crashed with TypeError: object of type 'int' has no len().
+    Must now be skipped, yielding an empty table (no raise).
+    """
+    from controller.tuner.rl import _json_to_qtable
+
+    qtable = _json_to_qtable({"0": {"0": 5}})  # type: ignore[arg-type]
+    assert qtable == {}
+
+
+def test_load_qtable_inner_value_not_dict_falls_back_to_empty(
+    tmp_path: pytest.TempPathFactory,
+) -> None:
+    """load_qtable on {'0': 5} on disk must not raise; returns {} (AIMD fallback)."""
+    import json as _json
+
+    path = str(tmp_path / "wrong_shape_1.json")  # type: ignore[operator]
+    with open(path, "w") as fh:
+        _json.dump({"0": 5}, fh)
+
+    result = load_qtable(path)
+    assert result == {}
+
+    cfg = _make_cfg(rl_qtable_path=path)
+    tuner = RLTuner(cfg)  # must construct without raising
+    assert tuner.next_max_jobs(10, 0.5) is not None
+
+
+def test_load_qtable_action_value_not_list_falls_back_to_empty(
+    tmp_path: pytest.TempPathFactory,
+) -> None:
+    """load_qtable on {'0': {'0': 5}} on disk must not raise; returns {} (AIMD fallback)."""
+    import json as _json
+
+    path = str(tmp_path / "wrong_shape_2.json")  # type: ignore[operator]
+    with open(path, "w") as fh:
+        _json.dump({"0": {"0": 5}}, fh)
+
+    result = load_qtable(path)
+    assert result == {}
+
+    cfg = _make_cfg(rl_qtable_path=path)
+    tuner = RLTuner(cfg)  # must construct without raising
+    assert tuner.next_max_jobs(10, 0.5) is not None
+
+
+def test_load_qtable_truncated_json_via_load_qtable_returns_empty(
+    tmp_path: pytest.TempPathFactory,
+) -> None:
+    """Truncated JSON loaded through load_qtable() must not raise; returns {}."""
+    path = str(tmp_path / "truncated.json")  # type: ignore[operator]
+    with open(path, "w") as fh:
+        fh.write('{"0": {"0": [0.1, 0.2, 0.3]}')  # missing closing brace
+
+    result = load_qtable(path)
+    assert result == {}
+
+    cfg = _make_cfg(rl_qtable_path=path)
+    tuner = RLTuner(cfg)  # must construct without raising
+    assert tuner.next_max_jobs(10, 0.5) is not None
+
+
+def test_load_qtable_mixed_valid_and_wrong_length_entry_keeps_valid(
+    tmp_path: pytest.TempPathFactory,
+) -> None:
+    """A table with one valid entry and one wrong-length entry must not raise;
+    the valid entry is preserved, the malformed one is dropped, and RLTuner
+    still constructs and next_max_jobs still works end-to-end."""
+    import json as _json
+
+    path = str(tmp_path / "mixed.json")  # type: ignore[operator]
+    with open(path, "w") as fh:
+        _json.dump(
+            {
+                "0": {"0": [0.1, 0.5, 0.9]},  # valid: length 3
+                "1": {"1": [0.1, 0.2]},  # malformed: length 2
+            },
+            fh,
+        )
+
+    result = load_qtable(path)
+    assert (0, 0) in result
+    assert result[(0, 0)] == [0.1, 0.5, 0.9]
+    assert (1, 1) not in result
+    assert len(result) == 1
+
+    cfg = _make_cfg(rl_qtable_path=path)
+    tuner = RLTuner(cfg)  # must construct without raising
+
+    rng = random.Random(21)
+    for _ in range(200):
+        current = rng.randint(cfg.max_jobs_floor, cfg.max_jobs_ceil)
+        sat = rng.random()
+        out = tuner.next_max_jobs(current, sat)
+        assert cfg.max_jobs_floor <= out <= cfg.max_jobs_ceil
+
+
 def test_config_rl_fields_defaults() -> None:
     """ControllerConfig must have all RL fields with correct types and defaults."""
     cfg = ControllerConfig(

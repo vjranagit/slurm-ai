@@ -9,8 +9,11 @@ dependencies = [
   "fastapi>=0.116.0",
   "uvicorn>=0.35.0",
   "prometheus-client>=0.22.0",
-  "pydantic>=2.11.0",
-  "python-dateutil>=2.9.0",
+  # >=1.3.1: floor below this resolves PYSEC-2026-249 (request.form() resource limits
+  # silently ignored for urlencoded bodies) and PYSEC-2026-248 (unvalidated request
+  # path lets an attacker-controlled path shift the authority boundary of
+  # request.url, spoofing request.url.hostname/netloc). Caught by pip-audit; see CI.
+  "starlette>=1.3.1",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +24,8 @@ dev = [
   # transitively, so a fresh CI install lacks it and test collection hard-fails; pin it here.
   # httpx (not httpx2) keeps test_bugfixes.py's importorskip("httpx") test active (full 182).
   "httpx>=0.28,<1.0",
+  # Dependency vulnerability scanning, run in CI (see .github/workflows/ci.yml).
+  "pip-audit>=2.7.0",
 ]
 
 [tool.ruff]

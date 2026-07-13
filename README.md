@@ -270,7 +270,7 @@ python -m controller.simulator.replay <trace.csv>
 | API docs | http://localhost:8080/docs | — |
 | Loop metrics | http://localhost:9108/metrics | — |
 | Prometheus | http://localhost:9090 | — |
-| Grafana | http://localhost:3000 | admin / admin |
+| Grafana | http://127.0.0.1:3000 | Set via `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` in `.env` (no default password; bound to `127.0.0.1` only) |
 
 ---
 
@@ -391,11 +391,24 @@ in `docs/E2E_RESULTS.md`.
 
 ## Security and deployment
 
-**The FastAPI application has no authentication, no CORS policy, and no rate limiting.**
+**Authentication is optional (off by default); rate limiting and CORS are configurable.**
 
 - `GET /cluster/snapshot` returns live queue data from the Slurm cluster.
 - `GET /metrics` returns Prometheus gauge values.
 - `GET /ui` serves the static dashboard.
+- Set `CONTROLLER_API_TOKEN` to require a `Authorization: Bearer <token>` header on
+  `/cluster/snapshot` and `/metrics` (constant-time compare); `/`, `/healthz`, and `/ui` always
+  stay open. Unset (default) = those two endpoints stay open, same as before.
+- Every route is rate-limited per client IP: `CONTROLLER_API_RATE_LIMIT_PER_MIN` (default `120`)
+  requests/minute, `429` past the limit. Set to `0` to disable. In-memory, per-process only — not
+  shared across multiple uvicorn workers/replicas.
+- CORS is off by default and driven by an allowlist: `CONTROLLER_API_ALLOWED_ORIGINS`
+  (comma-separated). Empty/unset = same-origin only (no `Access-Control-Allow-Origin` header is
+  emitted, so browsers block all cross-origin reads). List the exact origins your dashboard is
+  served from to permit them. Credentials are never allowed on cross-origin requests
+  (`allow_credentials=False`), so the unsafe "wildcard origin + credentials" combination cannot be
+  configured — a `*` allowlist is accepted but stays credential-less. Auth still applies: a
+  cross-origin caller of a token-protected endpoint must send the bearer token itself.
 
 Before running in any shared or production environment:
 

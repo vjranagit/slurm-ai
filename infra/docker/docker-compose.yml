@@ -5,11 +5,13 @@ services:
       dockerfile: infra/docker/slurm/Dockerfile
     container_name: slurm-local
     hostname: slurm
+    # sandbox-only: needed for cgroup/systemd in the single-container Slurm sandbox;
+    # NEVER use against a real cluster
     privileged: true
     command: []
     ports:
-      - "6817:6817"
-      - "6818:6818"
+      - "127.0.0.1:6817:6817"
+      - "127.0.0.1:6818:6818"
     volumes:
       - slurm-spool:/var/spool
       - slurm-logs:/var/log/slurm
@@ -20,18 +22,18 @@ services:
     volumes:
       - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
 
   grafana:
     image: grafana/grafana:11.2.2
     container_name: adaptive-grafana
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
     volumes:
       - ../grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
-      - "${GRAFANA_PORT:-3000}:3000"
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
 
 volumes:
   slurm-spool:

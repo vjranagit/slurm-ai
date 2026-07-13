@@ -13,6 +13,8 @@ class SlurmExecConfig:
     ssh_host: str = ""
     ssh_user: str = ""
     ssh_key_file: str = ""
+    exec_timeout_sec: int = 30
+    ssh_strict_host_key: bool = True
 
 
 class SlurmCommandRunner:
@@ -34,7 +36,10 @@ class SlurmCommandRunner:
             identity = (
                 f"-i {shlex.quote(self.cfg.ssh_key_file)} " if self.cfg.ssh_key_file else ""
             )
-            strict = "-o StrictHostKeyChecking=accept-new -o BatchMode=yes"
+            if self.cfg.ssh_strict_host_key:
+                strict = "-o StrictHostKeyChecking=yes -o BatchMode=yes"
+            else:
+                strict = "-o StrictHostKeyChecking=accept-new -o BatchMode=yes"
             user_host = (
                 f"{self.cfg.ssh_user}@{self.cfg.ssh_host}"
                 if self.cfg.ssh_user
@@ -48,10 +53,20 @@ class SlurmCommandRunner:
 
     def run(self, command: str, check: bool = True) -> tuple[bool, str]:
         wrapped = self._build(command)
+        timeout = self.cfg.exec_timeout_sec
         try:
-            proc = subprocess.run(wrapped, shell=True, check=check, capture_output=True, text=True)
+            proc = subprocess.run(
+                wrapped,
+                shell=True,
+                check=check,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
             return proc.returncode == 0, proc.stdout.strip()
         except subprocess.CalledProcessError as exc:
             msg = (exc.stderr or exc.stdout or str(exc)).strip()
             return False, msg
+        except subprocess.TimeoutExpired:
+            return False, f"timeout after {timeout}s: {command}"
 

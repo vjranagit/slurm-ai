@@ -89,6 +89,27 @@ tests (suite grew to 182):
 
 See `docs/E2E_RESULTS.md` for the full live run against the Docker Slurm sandbox.
 
+## API security posture (post-release hardening)
+
+The FastAPI app (`apps/api/main.py`) has three env-configurable, fail-safe security controls.
+Each keeps its prior open-by-default behavior when unset, so nothing breaks on upgrade, and each
+parses its env var defensively (garbage/blank -> the safe default, never a crash or a silent
+downgrade):
+
+- **Optional bearer-token auth** — `CONTROLLER_API_TOKEN`. When set, `/cluster/snapshot` and
+  `/metrics` require `Authorization: Bearer <token>` (constant-time compare via `secrets`);
+  `/`, `/healthz`, `/ui` stay open. Unset = those two endpoints stay open.
+- **Per-client rate limiting** — `CONTROLLER_API_RATE_LIMIT_PER_MIN` (default 120). Fixed-window
+  per client IP across all routes, `429` + `Retry-After` past the limit; `<= 0` disables.
+  In-memory / per-process (documented; not shared across workers).
+- **CORS allowlist** — `CONTROLLER_API_ALLOWED_ORIGINS` (comma-separated; empty/unset = same-origin
+  only, no middleware attached). Only listed origins are permitted; a disallowed preflight gets
+  `400`. `allow_credentials` is hardcoded `False` so the CORS-spec-forbidden "wildcard origin +
+  credentials" pairing is unreachable even with a `*` allowlist — safe because auth uses the
+  `Authorization` header, not cookies. The allowlist is read once at app construction (origins are
+  deployment config, not per-request state), which is why `configure_cors()` is a small seam the
+  tests drive against a fresh app with the env set.
+
 ## Next step for stronger production fidelity
 
 - Add SlurmDBD-backed QOS accounting limits (`MaxJobsPU`, `GrpTRES`) and preemption policy updates
