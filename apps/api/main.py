@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 import secrets
+import time
 from dataclasses import asdict
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-from starlette.responses import Response
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse, Response
 
 from controller import metrics as _metrics  # noqa: F401  # registers adaptive_* gauges
 from controller.collectors.slurm import SlurmCollector
@@ -25,6 +27,75 @@ collector = SlurmCollector(
     exec_timeout_sec=cfg.exec_timeout_sec,
     ssh_strict_host_key=cfg.ssh_strict_host_key,
 )
+
+# Per-client-IP fixed-window request counters backing RateLimitMiddleware, keyed
+# by client host -> (window_start_epoch_minute, count_in_window). Deliberately a
+# module-level dict (not middleware-instance state): state is in-memory and
+# per-process only — fine for the single-process deployment this MVP targets
+# (see README "Security and deployment"), but NOT shared across multiple
+# uvicorn workers/replicas if someone scales this out. That tradeoff is
+# documented, not hidden.
+_RATE_LIMIT_WINDOWS: dict[str, tuple[int, int]] = {}
+_RATE_LIMIT_WINDOWS_MAX_ENTRIES = 10_000
+
+
+def _rate_limit_per_min() -> int:
+    """Fail-safe env parse: garbage/unset falls back to a sane default, never raises.
+
+    Mirrors the _parse_bool fail-safe philosophy in controller/config.py: a typo'd
+    env var must not silently disable protection or crash the process. <= 0 means
+    "disabled" (explicit opt-out), matching CONTROLLER_API_TOKEN's empty-string
+    opt-out convention for require_api_token.
+    """
+    raw = os.getenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", "120")
+    try:
+        return int(raw)
+    except ValueError:
+        return 120
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Per-client, fixed-window rate limit applied to every request.
+
+    Addresses the "no rate limiting" gap called out in README.md's "Security and
+    deployment" section — the unauthenticated-by-default /cluster/snapshot
+    endpoint shells out to sinfo/squeue/sacct on every call, so an unthrottled
+    client can cheaply trigger repeated subprocess spawns (DoS). Also throttles
+    brute-forcing CONTROLLER_API_TOKEN.
+
+    Set CONTROLLER_API_RATE_LIMIT_PER_MIN=0 (or negative) to disable.
+    """
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+        limit = _rate_limit_per_min()
+        if limit <= 0:
+            return await call_next(request)
+
+        client = request.client.host if request.client else "unknown"
+        now_min = int(time.time() // 60)
+        window_start, count = _RATE_LIMIT_WINDOWS.get(client, (now_min, 0))
+        if window_start != now_min:
+            window_start, count = now_min, 0
+        count += 1
+        _RATE_LIMIT_WINDOWS[client] = (window_start, count)
+
+        # Opportunistic cleanup so long-lived processes with many distinct
+        # clients don't grow this dict unbounded.
+        if len(_RATE_LIMIT_WINDOWS) > _RATE_LIMIT_WINDOWS_MAX_ENTRIES:
+            for key, (window, _count) in list(_RATE_LIMIT_WINDOWS.items()):
+                if window != now_min:
+                    del _RATE_LIMIT_WINDOWS[key]
+
+        if count > limit:
+            return JSONResponse(
+                {"detail": "rate limit exceeded"},
+                status_code=429,
+                headers={"Retry-After": "60"},
+            )
+        return await call_next(request)
+
+
+app.add_middleware(RateLimitMiddleware)
 
 app.mount("/ui", StaticFiles(directory="apps/dashboard", html=True), name="ui")
 

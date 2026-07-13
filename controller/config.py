@@ -46,8 +46,53 @@ class ControllerConfig:
     rl_train_episodes: int = int(os.getenv("RL_TRAIN_EPISODES", "300"))
 
     def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Re-check invariants — call again after mutating fields post-construction.
+
+        `__post_init__` only runs once, at construction time. `controller/main.py`'s
+        CLI overrides (`--interval`, `--dry-run`) mutate the dataclass *after*
+        construction, which would silently bypass `__post_init__`-only validation;
+        callers that mutate fields after construction must call `validate()` again.
+
+        Every check here guards a documented safety invariant (see CLAUDE.md
+        "Safety invariants") against a garbage/hostile/typo'd env var or CLI flag
+        producing a value that is accepted but behaves unsafely at runtime instead
+        of failing fast with a clear error.
+        """
         if self.max_jobs_floor > self.max_jobs_ceil:
             raise ValueError(
                 f"max_jobs_floor ({self.max_jobs_floor}) must be <= "
                 f"max_jobs_ceil ({self.max_jobs_ceil})"
             )
+        if self.max_jobs_floor < 0:
+            raise ValueError(f"max_jobs_floor ({self.max_jobs_floor}) must be >= 0")
+        if self.interval_sec < 0:
+            raise ValueError(
+                f"interval_sec ({self.interval_sec}) must be >= 0 "
+                "(negative would raise ValueError out of time.sleep at runtime)"
+            )
+        if self.cooldown_sec < 0:
+            raise ValueError(
+                f"cooldown_sec ({self.cooldown_sec}) must be >= 0 "
+                "(negative silently disables the actuator cooldown safety invariant)"
+            )
+        if self.exec_timeout_sec <= 0:
+            raise ValueError(
+                f"exec_timeout_sec ({self.exec_timeout_sec}) must be > 0 "
+                "(non-positive breaks/disables the subprocess timeout guard)"
+            )
+        if not (0.0 <= self.pressure_low <= self.pressure_high <= 1.0):
+            raise ValueError(
+                f"pressure thresholds must satisfy 0 <= pressure_low ({self.pressure_low}) "
+                f"<= pressure_high ({self.pressure_high}) <= 1"
+            )
+        if not (0.0 < self.rl_alpha <= 1.0):
+            raise ValueError(f"rl_alpha ({self.rl_alpha}) must be in (0, 1]")
+        if not (0.0 <= self.rl_gamma <= 1.0):
+            raise ValueError(f"rl_gamma ({self.rl_gamma}) must be in [0, 1]")
+        if not (0.0 <= self.rl_epsilon <= 1.0):
+            raise ValueError(f"rl_epsilon ({self.rl_epsilon}) must be in [0, 1]")
+        if self.rl_train_episodes <= 0:
+            raise ValueError(f"rl_train_episodes ({self.rl_train_episodes}) must be > 0")

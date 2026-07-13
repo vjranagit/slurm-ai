@@ -42,6 +42,20 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TC(api_module.app)
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limit_state() -> None:
+    """RateLimitMiddleware's window counters are a process-global dict (module-level,
+    not per-TestClient), so every test in this file shares them via TestClient's
+    fixed synthetic client host. Reset before and after each test so tests stay
+    order-independent and one test's requests never count against another's limit.
+    """
+    import apps.api.main as api_module
+
+    api_module._RATE_LIMIT_WINDOWS.clear()
+    yield
+    api_module._RATE_LIMIT_WINDOWS.clear()
+
+
 # ---------------------------------------------------------------------------
 # /healthz
 # ---------------------------------------------------------------------------
@@ -285,3 +299,113 @@ def test_token_set_root_stays_open_always(
     monkeypatch.setenv("CONTROLLER_API_TOKEN", "s3cret")
     response = client.get("/")
     assert response.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# RateLimitMiddleware (CONTROLLER_API_RATE_LIMIT_PER_MIN) — addresses the
+# "no rate limiting" gap documented in README.md's "Security and deployment"
+# section. Applies to every route (global middleware), keyed per client host.
+# ---------------------------------------------------------------------------
+
+
+def test_requests_within_limit_all_succeed(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", "5")
+    for _ in range(5):
+        response = client.get("/healthz")
+        assert response.status_code == 200
+
+
+def test_request_past_limit_returns_429(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", "3")
+    for _ in range(3):
+        assert client.get("/healthz").status_code == 200
+    response = client.get("/healthz")
+    assert response.status_code == 429
+
+
+def test_429_response_includes_retry_after_header(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", "1")
+    client.get("/healthz")
+    response = client.get("/healthz")
+    assert response.status_code == 429
+    assert "Retry-After" in response.headers
+
+
+def test_429_response_has_detail_field(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", "1")
+    client.get("/healthz")
+    response = client.get("/healthz")
+    assert response.json() == {"detail": "rate limit exceeded"}
+
+
+def test_rate_limit_is_global_across_all_routes_not_per_endpoint(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exhausting the limit on one route blocks a different route from the same client."""
+    monkeypatch.setenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", "2")
+    assert client.get("/healthz").status_code == 200
+    assert client.get("/").status_code == 200
+    response = client.get("/cluster/snapshot")
+    assert response.status_code == 429
+
+
+def test_rate_limit_zero_disables_limiting(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", "0")
+    for _ in range(25):
+        assert client.get("/healthz").status_code == 200
+
+
+def test_rate_limit_negative_disables_limiting(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", "-1")
+    for _ in range(25):
+        assert client.get("/healthz").status_code == 200
+
+
+def test_rate_limit_garbage_env_falls_back_to_default_never_raises(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail-safe like _parse_bool: a typo'd env var must not crash the app."""
+    monkeypatch.setenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", "not-a-number")
+    response = client.get("/healthz")
+    assert response.status_code == 200
+
+
+def test_rate_limit_unset_uses_default_120_per_min(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", raising=False)
+    for _ in range(10):
+        assert client.get("/healthz").status_code == 200
+
+
+def test_rate_limit_tracks_clients_independently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A client hitting its limit must not affect a different client's quota."""
+    import apps.api.main as api_module
+    from fastapi.testclient import TestClient as TC
+
+    monkeypatch.setenv("CONTROLLER_API_RATE_LIMIT_PER_MIN", "1")
+    snap = make_fixed_snapshot()
+    monkeypatch.setattr(api_module.collector, "snapshot", MagicMock(return_value=snap))
+
+    client_a = TC(api_module.app, client=("10.0.0.1", 12345))
+    client_b = TC(api_module.app, client=("10.0.0.2", 12345))
+
+    assert client_a.get("/healthz").status_code == 200
+    assert client_a.get("/healthz").status_code == 429  # client A now over its limit
+
+    # client B is a distinct source IP — must still have its own fresh quota.
+    assert client_b.get("/healthz").status_code == 200

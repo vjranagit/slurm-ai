@@ -269,3 +269,177 @@ def test_normal_floor_ceil_does_not_raise() -> None:
     cfg = ControllerConfig(max_jobs_floor=2, max_jobs_ceil=128)
     assert cfg.max_jobs_floor == 2
     assert cfg.max_jobs_ceil == 128
+
+
+# ---------------------------------------------------------------------------
+# Extended validate() — guards documented safety invariants against garbage,
+# negative, or out-of-range values that __post_init__ previously accepted
+# silently (only floor<=ceil was checked). Zero is intentionally still valid
+# for interval_sec/cooldown_sec (used by test_main_loop.py/test_stress.py to
+# make loops run without sleeping) — only negative/out-of-range is rejected.
+# ---------------------------------------------------------------------------
+
+
+def test_negative_max_jobs_floor_raises_value_error() -> None:
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="max_jobs_floor"):
+        ControllerConfig(max_jobs_floor=-1, max_jobs_ceil=128)
+
+
+def test_zero_max_jobs_floor_is_allowed() -> None:
+    from controller.config import ControllerConfig
+
+    cfg = ControllerConfig(max_jobs_floor=0, max_jobs_ceil=128)
+    assert cfg.max_jobs_floor == 0
+
+
+def test_negative_interval_sec_raises_value_error() -> None:
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="interval_sec"):
+        ControllerConfig(interval_sec=-1)
+
+
+def test_zero_interval_sec_is_allowed() -> None:
+    """Used by test_main_loop.py to make the loop not sleep between iterations."""
+    from controller.config import ControllerConfig
+
+    cfg = ControllerConfig(interval_sec=0)
+    assert cfg.interval_sec == 0
+
+
+def test_negative_cooldown_sec_raises_value_error() -> None:
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="cooldown_sec"):
+        ControllerConfig(cooldown_sec=-1)
+
+
+def test_zero_cooldown_sec_is_allowed() -> None:
+    """Used throughout test_actuator.py/test_stress.py to disable cooldown skip."""
+    from controller.config import ControllerConfig
+
+    cfg = ControllerConfig(cooldown_sec=0)
+    assert cfg.cooldown_sec == 0
+
+
+def test_zero_exec_timeout_sec_raises_value_error() -> None:
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="exec_timeout_sec"):
+        ControllerConfig(exec_timeout_sec=0)
+
+
+def test_negative_exec_timeout_sec_raises_value_error() -> None:
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="exec_timeout_sec"):
+        ControllerConfig(exec_timeout_sec=-5)
+
+
+def test_pressure_high_above_one_raises_value_error() -> None:
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="pressure"):
+        ControllerConfig(pressure_high=1.5, pressure_low=0.45)
+
+
+def test_pressure_low_below_zero_raises_value_error() -> None:
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="pressure"):
+        ControllerConfig(pressure_high=0.85, pressure_low=-0.1)
+
+
+def test_pressure_low_greater_than_high_raises_value_error() -> None:
+    """Inverted thresholds break the AIMD/RL three-zone decrease/hold/increase logic."""
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="pressure"):
+        ControllerConfig(pressure_high=0.3, pressure_low=0.7)
+
+
+def test_pressure_low_equal_to_high_is_allowed() -> None:
+    from controller.config import ControllerConfig
+
+    cfg = ControllerConfig(pressure_high=0.5, pressure_low=0.5)
+    assert cfg.pressure_high == cfg.pressure_low == 0.5
+
+
+def test_pressure_bounds_0_and_1_are_allowed() -> None:
+    from controller.config import ControllerConfig
+
+    cfg = ControllerConfig(pressure_high=1.0, pressure_low=0.0)
+    assert cfg.pressure_high == 1.0
+    assert cfg.pressure_low == 0.0
+
+
+def test_rl_alpha_zero_raises_value_error() -> None:
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="rl_alpha"):
+        ControllerConfig(rl_alpha=0.0)
+
+
+def test_rl_alpha_above_one_raises_value_error() -> None:
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="rl_alpha"):
+        ControllerConfig(rl_alpha=1.1)
+
+
+def test_rl_gamma_out_of_range_raises_value_error() -> None:
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="rl_gamma"):
+        ControllerConfig(rl_gamma=-0.1)
+
+
+def test_rl_epsilon_out_of_range_raises_value_error() -> None:
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="rl_epsilon"):
+        ControllerConfig(rl_epsilon=1.1)
+
+
+def test_rl_train_episodes_zero_raises_value_error() -> None:
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="rl_train_episodes"):
+        ControllerConfig(rl_train_episodes=0)
+
+
+def test_rl_train_episodes_negative_raises_value_error() -> None:
+    from controller.config import ControllerConfig
+
+    with pytest.raises(ValueError, match="rl_train_episodes"):
+        ControllerConfig(rl_train_episodes=-10)
+
+
+def test_rl_defaults_pass_validation() -> None:
+    """Default rl_alpha=0.1/rl_gamma=0.9/rl_epsilon=0.1/rl_train_episodes=300 are valid."""
+    from controller.config import ControllerConfig
+
+    cfg = ControllerConfig()
+    cfg.validate()  # must not raise
+
+
+def test_validate_can_be_called_again_after_mutation_and_still_pass() -> None:
+    """validate() is re-callable post-construction (used by build_config_from_args)."""
+    from controller.config import ControllerConfig
+
+    cfg = ControllerConfig(interval_sec=15)
+    cfg.interval_sec = 30
+    cfg.validate()
+    assert cfg.interval_sec == 30
+
+
+def test_validate_catches_bad_mutation_after_construction() -> None:
+    """A valid config mutated to an invalid value must fail on re-validate()."""
+    from controller.config import ControllerConfig
+
+    cfg = ControllerConfig(interval_sec=15)
+    cfg.interval_sec = -5
+    with pytest.raises(ValueError, match="interval_sec"):
+        cfg.validate()

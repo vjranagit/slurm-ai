@@ -145,3 +145,46 @@ def test_dry_run_cli_arg_explicit_false_goes_live() -> None:
     cfg = _make_cfg(dry_run=True)
     cfg.dry_run = _parse_bool("false", True)
     assert cfg.dry_run is False
+
+
+# ---------------------------------------------------------------------------
+# build_config_from_args() — CLI overrides mutate cfg *after* __post_init__ has
+# already run, which used to silently bypass validation entirely (e.g.
+# `--interval -5` would sail through construction, then crash `time.sleep(-5)`
+# deep inside run()'s while loop instead of failing fast at startup). This
+# helper re-validates after applying overrides so bad CLI input fails fast
+# with a clear error, exactly like a bad env var does at construction time.
+# ---------------------------------------------------------------------------
+
+
+class _Args:
+    def __init__(self, interval: int | None = None, dry_run: str | None = None) -> None:
+        self.interval = interval
+        self.dry_run = dry_run
+
+
+def test_build_config_from_args_no_overrides_uses_env_defaults() -> None:
+    cfg = main_module.build_config_from_args(_Args())
+    assert cfg.interval_sec == 15  # default, no env override in this test process
+    assert cfg.dry_run is True
+
+
+def test_build_config_from_args_valid_interval_override_applies() -> None:
+    cfg = main_module.build_config_from_args(_Args(interval=30))
+    assert cfg.interval_sec == 30
+
+
+def test_build_config_from_args_negative_interval_override_raises() -> None:
+    """The bug this closes: a mutated-after-construction field must still be validated."""
+    with pytest.raises(ValueError, match="interval_sec"):
+        main_module.build_config_from_args(_Args(interval=-5))
+
+
+def test_build_config_from_args_dry_run_override_garbage_stays_safe_true() -> None:
+    cfg = main_module.build_config_from_args(_Args(dry_run="garbage"))
+    assert cfg.dry_run is True
+
+
+def test_build_config_from_args_dry_run_override_explicit_false_goes_live() -> None:
+    cfg = main_module.build_config_from_args(_Args(dry_run="false"))
+    assert cfg.dry_run is False

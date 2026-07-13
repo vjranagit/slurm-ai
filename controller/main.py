@@ -90,15 +90,29 @@ def run(cfg: ControllerConfig) -> None:
         time.sleep(cfg.interval_sec)
 
 
+def build_config_from_args(args: argparse.Namespace) -> ControllerConfig:
+    """Construct config from env, apply CLI overrides, then re-validate.
+
+    `ControllerConfig.__post_init__` only runs at construction time, so mutating
+    `interval_sec`/`dry_run` afterwards (as the CLI overrides below do) would
+    silently bypass validation — e.g. `--interval -5` would reach the while-loop
+    and crash `time.sleep(-5)` deep in the loop instead of failing fast here with
+    a clear error. Call `cfg.validate()` again after every post-construction
+    mutation.
+    """
+    cfg = ControllerConfig()
+    if args.interval is not None:
+        cfg.interval_sec = args.interval
+    if args.dry_run is not None:
+        cfg.dry_run = _parse_bool(args.dry_run, True)
+    cfg.validate()
+    return cfg
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--interval", type=int, default=None)
     parser.add_argument("--dry-run", type=str, default=None)
     args = parser.parse_args()
 
-    cfg = ControllerConfig()
-    if args.interval is not None:
-        cfg.interval_sec = args.interval
-    if args.dry_run is not None:
-        cfg.dry_run = _parse_bool(args.dry_run, True)
-    run(cfg)
+    run(build_config_from_args(args))
