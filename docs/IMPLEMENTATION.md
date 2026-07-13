@@ -110,6 +110,25 @@ downgrade):
   deployment config, not per-request state), which is why `configure_cors()` is a small seam the
   tests drive against a fresh app with the env set.
 
+Error handling: `/cluster/snapshot` maps a collector failure (the collector raises on Slurm CLI
+errors by design — fail-loud) to a structured `503 Service Unavailable` with a generic detail
+string instead of an unhandled 500. The underlying exception text (command lines, hostnames,
+stderr) is logged server-side only and never echoed to the client, so scheduler internals cannot
+leak through the unauthenticated-by-default endpoint. `/healthz` stays `200` during a scheduler
+outage: scheduler down ≠ API down.
+
+Dependency hygiene has two layers: CI runs `pip-audit` (fails the build on known-vulnerable
+installed versions — this is what caught the starlette PYSEC-2026-248/249 CVEs), and
+`.github/dependabot.yml` opens weekly update PRs for both the `pip` and `github-actions`
+ecosystems. `controller/tests/test_dependencies.py` pins the starlette CVE floor (`>=1.3.1`),
+the pip-audit CI step, and the Dependabot config in place as regression guards.
+
+All of the above is covered twice over: in-process TestClient units (`controller/tests/test_api.py`)
+and true end-to-end tests (`controller/tests/test_e2e_api.py`) that boot `uvicorn` in a subprocess
+with stub `sinfo`/`squeue`/`sacct` binaries (`SLURM_EXEC_MODE=local`) and drive real HTTP against
+the import-time env wiring — CORS allowlist, bearer auth, rate limiting, the full
+collector-to-JSON snapshot pipeline, and the outage-503 path.
+
 ## Next step for stronger production fidelity
 
 - Add SlurmDBD-backed QOS accounting limits (`MaxJobsPU`, `GrpTRES`) and preemption policy updates
